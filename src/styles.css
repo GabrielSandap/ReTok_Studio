@@ -71,6 +71,7 @@ button {
 .topbar-actions,
 .workspace,
 .brand,
+.status,
 .panel-title,
 .source-field > span,
 .audio-meter > div,
@@ -147,6 +148,36 @@ button {
   text-transform: uppercase;
 }
 
+h1 {
+  margin: 0;
+  color: var(--text);
+  font-size: clamp(23px, 2.6vw, 31px);
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.status {
+  gap: 9px;
+  min-height: 36px;
+  padding: 0 13px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.74);
+  font-size: 14px;
+  font-weight: 720;
+  white-space: nowrap;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.status-dot.live,
 .rec-pill.active::before {
   background: var(--danger);
   box-shadow: 0 0 0 6px rgba(224, 68, 89, 0.13);
@@ -202,7 +233,7 @@ button {
 
 .sources-panel-content {
   display: grid;
-  grid-template-rows: auto auto auto auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto auto auto auto minmax(0, 1fr) auto;
   gap: 12px;
   min-width: 0;
   min-height: 0;
@@ -477,7 +508,8 @@ button {
 }
 
 .source-field svg,
-.source-summary svg {
+.source-summary svg,
+.focal-mode-panel > span svg {
   color: var(--accent-dark);
 }
 
@@ -499,9 +531,77 @@ select:disabled {
   opacity: 0.62;
 }
 
+.focal-mode-panel {
+  display: grid;
+  gap: 8px;
+}
+
+.focal-mode-panel > span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.focal-mode-options {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+
+.focal-mode-options button {
+  display: grid;
+  min-width: 0;
+  min-height: 42px;
+  place-items: center;
+  gap: 2px;
+  padding: 6px 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--surface-muted) 70%, var(--surface));
+  cursor: pointer;
+  line-height: 1.05;
+  transition:
+    background 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease;
+}
+
+.focal-mode-options button strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+
+.focal-mode-options button small {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 10px;
+  font-weight: 780;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.focal-mode-options button.active {
+  border-color: rgba(15, 124, 87, 0.48);
+  color: var(--accent-dark);
+  background: #eaf7f1;
+  box-shadow: inset 0 0 0 1px rgba(15, 124, 87, 0.12);
+}
+
+.focal-mode-options button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
 button:focus-visible,
 a:focus-visible,
-select:focus-visible {
+select:focus-visible,
+.focal-mode-options button:focus-visible {
   border-color: var(--accent-dark);
   box-shadow: 0 0 0 3px rgba(29, 185, 128, 0.16);
   outline: none;
@@ -1147,6 +1247,10 @@ select:focus-visible {
   .topbar {
     gap: 10px;
     min-height: 54px;
+  }
+
+  h1 {
+    font-size: 22px;
   }
 
   .setup-panel,

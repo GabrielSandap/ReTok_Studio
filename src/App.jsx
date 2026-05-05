@@ -8,6 +8,7 @@ import {
   CircleStop,
   Crosshair,
   FlipHorizontal,
+  Focus,
   Library,
   Download,
   Mic2,
@@ -35,29 +36,40 @@ const RETRO_GLOW_SCALE = 0.16;
 const RETRO_GLOW_ALPHA = 0.2;
 const WIDE_CAMERA_STORAGE_KEY = 'retok-wide-camera-id';
 const WIDE_CAMERA_MANUAL_KEY = 'retok-wide-camera-manual';
+const DEFAULT_FOCAL_MODE_KEY = 'wide';
+
+const FOCAL_MODES = [
+  { key: 'wide', label: '0.5x', summary: 'Grand angle', targetZoom: 'min', digitalScale: 1, profileMode: 'wide' },
+];
 
 const CAMERA_TEST_MODES = [
   {
-    key: 'natural',
-    label: 'auto',
+    key: 'uhd',
+    label: '4K',
     constraints: {
+      width: { ideal: 3840 },
+      height: { ideal: 2160 },
       aspectRatio: { ideal: CAMERA_ASPECT_RATIO },
       resizeMode: { ideal: 'none' },
       frameRate: { ideal: 30, max: 60 },
     },
-    forceResolution: false,
+    forceResolution: true,
+    qualityRank: 5,
+    wideRank: 1,
   },
   {
-    key: 'hd',
-    label: '720p wide',
+    key: 'qhd',
+    label: '1440p',
     constraints: {
-      width: { ideal: 1280 },
-      height: { ideal: 720 },
+      width: { ideal: 2560 },
+      height: { ideal: 1440 },
       aspectRatio: { ideal: CAMERA_ASPECT_RATIO },
       resizeMode: { ideal: 'none' },
       frameRate: { ideal: 30, max: 60 },
     },
-    forceResolution: false,
+    forceResolution: true,
+    qualityRank: 4,
+    wideRank: 2,
   },
   {
     key: 'fullhd',
@@ -70,6 +82,34 @@ const CAMERA_TEST_MODES = [
       frameRate: { ideal: 30, max: 60 },
     },
     forceResolution: true,
+    qualityRank: 3,
+    wideRank: 3,
+  },
+  {
+    key: 'hd',
+    label: '720p wide',
+    constraints: {
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+      aspectRatio: { ideal: CAMERA_ASPECT_RATIO },
+      resizeMode: { ideal: 'none' },
+      frameRate: { ideal: 30, max: 60 },
+    },
+    forceResolution: false,
+    qualityRank: 2,
+    wideRank: 6,
+  },
+  {
+    key: 'natural',
+    label: 'auto',
+    constraints: {
+      aspectRatio: { ideal: CAMERA_ASPECT_RATIO },
+      resizeMode: { ideal: 'none' },
+      frameRate: { ideal: 30, max: 60 },
+    },
+    forceResolution: false,
+    qualityRank: 1,
+    wideRank: 4,
   },
 ];
 
@@ -125,6 +165,37 @@ function getCapabilityMin(capability) {
   return Number.isFinite(capability.min) ? capability.min : null;
 }
 
+function getCapabilityMax(capability) {
+  if (!capability || typeof capability !== 'object') return null;
+  return Number.isFinite(capability.max) ? capability.max : null;
+}
+
+function getCapabilityStep(capability) {
+  if (!capability || typeof capability !== 'object') return null;
+  return Number.isFinite(capability.step) && capability.step > 0 ? capability.step : null;
+}
+
+function getFocalMode(modeKey = DEFAULT_FOCAL_MODE_KEY) {
+  return FOCAL_MODES.find((mode) => mode.key === modeKey) || FOCAL_MODES[0];
+}
+
+function getFocalZoomValue(capabilities, modeKey = DEFAULT_FOCAL_MODE_KEY) {
+  const zoomCapability = capabilities?.zoom;
+  const minZoom = getCapabilityMin(zoomCapability);
+  const maxZoom = getCapabilityMax(zoomCapability);
+
+  if (minZoom === null || maxZoom === null) return null;
+
+  const mode = getFocalMode(modeKey);
+  const rawZoom = mode.targetZoom === 'min' ? minZoom : mode.targetZoom;
+  const clampedZoom = clampNumber(rawZoom, minZoom, maxZoom);
+  const step = getCapabilityStep(zoomCapability);
+
+  if (!step) return clampedZoom;
+
+  return clampNumber(minZoom + Math.round((clampedZoom - minZoom) / step) * step, minZoom, maxZoom);
+}
+
 async function getWideCameraStream(deviceId, modeKey = 'natural') {
   try {
     return await navigator.mediaDevices.getUserMedia({
@@ -178,26 +249,51 @@ function isObsVirtualCamera(label = '') {
 function scoreCameraProfile(label, settings, capabilities, modeKey = 'natural') {
   const width = Number(settings?.width) || 0;
   const height = Number(settings?.height) || 0;
+  const frameRate = Number(settings?.frameRate) || 0;
   const ratio = width && height ? width / height : 0;
   const normalizedLabel = label.toLowerCase();
+  const mode = getCameraTestMode(modeKey);
   const ratioDistance = ratio ? Math.abs(ratio - CAMERA_ASPECT_RATIO) / CAMERA_ASPECT_RATIO : 1;
   const ratioScore = Math.max(0, 34 - ratioDistance * 34);
-  const resolutionScore = Math.min(28, ((width * height) / (1920 * 1080)) * 28);
-  const fullHdBonus = width >= 1900 && height >= 1000 ? 22 : 0;
+  const resolutionScore = Math.min(58, ((width * height) / (3840 * 2160)) * 58);
+  const fullHdBonus = width >= 1900 && height >= 1000 ? 18 : 0;
+  const ultraHdBonus = width >= 3000 && height >= 1600 ? 26 : 0;
+  const frameRateBonus = Math.min(14, (frameRate / 60) * 14);
   const zoomMin = getCapabilityMin(capabilities?.zoom);
   const zoomBonus = zoomMin !== null ? 14 : 0;
-  const modeBonus = modeKey === 'natural' ? 24 : modeKey === 'hd' ? 16 : 0;
+  const modeBonus = (mode.qualityRank || 1) * 8;
   const faceTimeFullHdCropPenalty = /facetime/.test(normalizedLabel) && modeKey === 'fullhd' ? 42 : 0;
 
   return Math.round(
     ratioScore +
       resolutionScore +
       fullHdBonus +
+      ultraHdBonus +
+      frameRateBonus +
       zoomBonus +
       modeBonus +
       getWideLabelScore(label) -
       faceTimeFullHdCropPenalty,
   );
+}
+
+function scoreWideCameraProfile(profile) {
+  const width = Number(profile.settings?.width) || 0;
+  const height = Number(profile.settings?.height) || 0;
+  const frameRate = Number(profile.settings?.frameRate) || 0;
+  const resolutionScore = Math.min(120, ((width * height) / (3840 * 2160)) * 120);
+  const frameRateScore = Math.min(16, (frameRate / 60) * 16);
+  const zoomMin = getCapabilityMin(profile.capabilities?.zoom);
+  const trueWideBonus = zoomMin !== null ? 34 : 0;
+  const labelScore = getWideLabelScore(profile.label);
+  const obsPenalty = isObsVirtualCamera(profile.label) ? 50 : 0;
+
+  return Math.round(profile.score + resolutionScore + frameRateScore + trueWideBonus + labelScore - obsPenalty);
+}
+
+function scoreQualityCameraProfile(profile) {
+  const obsPenalty = isObsVirtualCamera(profile.label) ? 50 : 0;
+  return profile.score - obsPenalty;
 }
 
 function getBestCameraProfile(profiles, { allowObsVirtual = true } = {}) {
@@ -206,13 +302,39 @@ function getBestCameraProfile(profiles, { allowObsVirtual = true } = {}) {
     .sort((first, second) => second.score - first.score)[0] || null;
 }
 
+function getBestProfileForFocalMode(profiles, focalModeKey = DEFAULT_FOCAL_MODE_KEY) {
+  const focalModeConfig = getFocalMode(focalModeKey);
+  const scorer = focalModeConfig.profileMode === 'wide' ? scoreWideCameraProfile : scoreQualityCameraProfile;
+
+  return [...profiles]
+    .filter((profile) => profile.available)
+    .sort((first, second) => scorer(second) - scorer(first))[0] || null;
+}
+
+function getBestDeviceProfiles(profiles) {
+  const profilesByDevice = new Map();
+
+  profiles.forEach((profile) => {
+    const currentProfiles = profilesByDevice.get(profile.deviceId) || [];
+    currentProfiles.push(profile);
+    profilesByDevice.set(profile.deviceId, currentProfiles);
+  });
+
+  return [...profilesByDevice.values()].map((deviceProfiles) => getBestProfileForFocalMode(deviceProfiles)).filter(Boolean);
+}
+
 function pickBestWideCamera(profiles, storedSelection) {
-  const bestProfile = getBestCameraProfile(profiles, { allowObsVirtual: false }) || getBestCameraProfile(profiles);
+  const availableProfiles = profiles.filter((profile) => profile.available);
+  const bestProfile =
+    getBestProfileForFocalMode(availableProfiles.filter((profile) => !isObsVirtualCamera(profile.label))) ||
+    getBestProfileForFocalMode(availableProfiles);
   const storedProfile = storedSelection.manual
     ? profiles.find((profile) => profile.available && profile.deviceId === storedSelection.deviceId)
     : null;
 
-  if (storedProfile && (!bestProfile || storedProfile.score >= bestProfile.score - 8)) return storedProfile.deviceId;
+  if (storedProfile && (!bestProfile || scoreWideCameraProfile(storedProfile) >= scoreWideCameraProfile(bestProfile) - 8)) {
+    return storedProfile.deviceId;
+  }
 
   return bestProfile?.deviceId || profiles.find((profile) => profile.available)?.deviceId || '';
 }
@@ -236,7 +358,6 @@ async function scanCameraProfiles(cameraDevices) {
 
   for (const [index, device] of cameraDevices.entries()) {
     const fallbackLabel = device.label || `Caméra ${index + 1}`;
-    const testedProfiles = [];
 
     for (const mode of CAMERA_TEST_MODES) {
       let stream;
@@ -244,11 +365,11 @@ async function scanCameraProfiles(cameraDevices) {
       try {
         stream = await getWideCameraStream(device.deviceId, mode.key);
         const [track] = stream.getVideoTracks();
-        const settings = await applyWideCameraTrackSettings(stream, { forceResolution: mode.forceResolution });
+        const settings = await applyWideCameraTrackSettings(stream, { mode });
         const capabilities = track?.getCapabilities?.() || {};
         const label = device.label || track?.label || fallbackLabel;
 
-        testedProfiles.push({
+        profiles.push({
           deviceId: device.deviceId,
           label,
           settings,
@@ -259,7 +380,7 @@ async function scanCameraProfiles(cameraDevices) {
           available: true,
         });
       } catch (scanError) {
-        testedProfiles.push({
+        profiles.push({
           deviceId: device.deviceId,
           label: fallbackLabel,
           settings: {},
@@ -272,23 +393,6 @@ async function scanCameraProfiles(cameraDevices) {
       } finally {
         stream?.getTracks().forEach((track) => track.stop());
       }
-    }
-
-    const bestTestedProfile = getBestCameraProfile(testedProfiles);
-
-    if (bestTestedProfile) {
-      profiles.push(bestTestedProfile);
-    } else {
-      profiles.push({
-        deviceId: device.deviceId,
-        label: fallbackLabel,
-        settings: {},
-        capabilities: {},
-        modeKey: 'natural',
-        modeLabel: 'auto',
-        score: getWideLabelScore(fallbackLabel) - 80,
-        available: false,
-      });
     }
   }
 
@@ -597,6 +701,21 @@ function getCoverRect(sourceWidth, sourceHeight, targetWidth, targetHeight) {
   return { x: 0, y: (targetHeight - height) / 2, width, height };
 }
 
+function getFocalCoverRect(coverRect, scale) {
+  const focalScale = Math.max(1, Number(scale) || 1);
+  if (focalScale <= 1) return coverRect;
+
+  const width = coverRect.width * focalScale;
+  const height = coverRect.height * focalScale;
+
+  return {
+    x: coverRect.x - (width - coverRect.width) / 2,
+    y: coverRect.y - (height - coverRect.height) / 2,
+    width,
+    height,
+  };
+}
+
 function drawVideoFrame(context, video, coverRect, mirrored) {
   context.save();
   if (mirrored) {
@@ -607,7 +726,25 @@ function drawVideoFrame(context, video, coverRect, mirrored) {
   context.restore();
 }
 
-async function applyWideCameraTrackSettings(stream, { forceResolution = true } = {}) {
+async function applyFocalModeToTrack(track, modeKey = DEFAULT_FOCAL_MODE_KEY) {
+  if (!track) return { hardwareApplied: false, settings: {} };
+
+  const capabilities = track.getCapabilities?.() || {};
+  const zoomValue = getFocalZoomValue(capabilities, modeKey);
+
+  if (zoomValue === null || !track.applyConstraints) {
+    return { hardwareApplied: false, settings: track.getSettings?.() || {} };
+  }
+
+  try {
+    await track.applyConstraints({ advanced: [{ zoom: zoomValue }] });
+    return { hardwareApplied: true, settings: track.getSettings?.() || {} };
+  } catch (zoomError) {
+    return { hardwareApplied: false, settings: track.getSettings?.() || {} };
+  }
+}
+
+async function applyWideCameraTrackSettings(stream, { mode = getCameraTestMode('fullhd') } = {}) {
   const [track] = stream.getVideoTracks();
   if (!track?.applyConstraints) return track?.getSettings?.() || {};
 
@@ -619,10 +756,10 @@ async function applyWideCameraTrackSettings(stream, { forceResolution = true } =
   if (capabilities.focusMode?.includes?.('continuous')) advanced.focusMode = 'continuous';
   if (capabilities.exposureMode?.includes?.('continuous')) advanced.exposureMode = 'continuous';
 
-  const constraints = forceResolution
+  const constraints = mode.forceResolution
     ? {
-        width: { ideal: 1920 },
-        height: { ideal: 1080 },
+        width: mode.constraints.width,
+        height: mode.constraints.height,
         aspectRatio: { ideal: CAMERA_ASPECT_RATIO },
         resizeMode: { ideal: 'none' },
       }
@@ -1002,12 +1139,15 @@ export default function App() {
   const meterFrameRef = useRef(null);
   const activeCameraIdRef = useRef('');
   const cameraScanRunRef = useRef(0);
+  const focalModeRef = useRef(DEFAULT_FOCAL_MODE_KEY);
+  const focalDigitalScaleRef = useRef(getFocalMode(DEFAULT_FOCAL_MODE_KEY).digitalScale);
 
   const [cameras, setCameras] = useState([]);
   const [cameraProfiles, setCameraProfiles] = useState([]);
   const [audioInputs, setAudioInputs] = useState([]);
   const [selectedCameraId, setSelectedCameraId] = useState('');
   const [selectedAudioId, setSelectedAudioId] = useState('');
+  const [focalMode, setFocalMode] = useState(DEFAULT_FOCAL_MODE_KEY);
   const [status, setStatus] = useState('Sources non initialisées');
   const [error, setError] = useState('');
   const [isRecording, setIsRecording] = useState(false);
@@ -1039,13 +1179,25 @@ export default function App() {
   const whiteBalancePickerActiveRef = useRef(false);
   const mirrorEnabledRef = useRef(mirrorEnabled);
 
+  const cameraDisplayProfiles = useMemo(() => getBestDeviceProfiles(cameraProfiles), [cameraProfiles]);
   const cameraProfileById = useMemo(
-    () => new Map(cameraProfiles.map((profile) => [profile.deviceId, profile])),
+    () => new Map(cameraDisplayProfiles.map((profile) => [profile.deviceId, profile])),
+    [cameraDisplayProfiles],
+  );
+  const cameraProfilesById = useMemo(
+    () =>
+      cameraProfiles.reduce((profilesById, profile) => {
+        const nextProfiles = profilesById.get(profile.deviceId) || [];
+        nextProfiles.push(profile);
+        profilesById.set(profile.deviceId, nextProfiles);
+        return profilesById;
+      }, new Map()),
     [cameraProfiles],
   );
   const recommendedCameraId = useMemo(
     () =>
-      (getBestCameraProfile(cameraProfiles, { allowObsVirtual: false }) || getBestCameraProfile(cameraProfiles))
+      (getBestProfileForFocalMode(cameraProfiles.filter((profile) => !isObsVirtualCamera(profile.label))) ||
+        getBestProfileForFocalMode(cameraProfiles))
         ?.deviceId || '',
     [cameraProfiles],
   );
@@ -1063,6 +1215,29 @@ export default function App() {
     [libraryItems, selectedClipId],
   );
   const mp4Supported = useMemo(() => isMp4RecordingSupported(), []);
+
+  function getReadyStatus(settings, modeLabel, focalModeKey = focalModeRef.current) {
+    const focalLabel = getFocalMode(focalModeKey).summary;
+
+    return settings?.width && settings?.height
+      ? `Prêt à enregistrer · ${settings.width}x${settings.height} · ${modeLabel} · ${focalLabel}`
+      : `Prêt à enregistrer · ${focalLabel}`;
+  }
+
+  async function applyFocalModeToStream(stream, modeKey = focalModeRef.current) {
+    const [track] = stream?.getVideoTracks?.() || [];
+    const mode = getFocalMode(modeKey);
+
+    if (modeKey === DEFAULT_FOCAL_MODE_KEY) {
+      focalDigitalScaleRef.current = 1;
+      return { hardwareApplied: true, settings: track?.getSettings?.() || {} };
+    }
+
+    const result = await applyFocalModeToTrack(track, modeKey);
+
+    focalDigitalScaleRef.current = mode.digitalScale;
+    return result;
+  }
 
   useEffect(() => {
     refreshDevices();
@@ -1121,6 +1296,17 @@ export default function App() {
     mirrorEnabledRef.current = mirrorEnabled;
     localStorage.setItem('retok-mirror-enabled', String(mirrorEnabled));
   }, [mirrorEnabled]);
+
+  useEffect(() => {
+    focalModeRef.current = focalMode;
+
+    if (!cameraStreamRef.current?.active) {
+      focalDigitalScaleRef.current = getFocalMode(focalMode).digitalScale;
+      return;
+    }
+
+    startCamera(selectedCameraId, { forceRestart: true });
+  }, [focalMode]);
 
   function setLibraryRecords(records) {
     libraryItemsRef.current.forEach((item) => URL.revokeObjectURL(item.url));
@@ -1234,7 +1420,10 @@ export default function App() {
       setSelectedCameraId(nextCameraId);
 
       if (nextCameraId) {
-        const nextProfile = labeledProfiles.find((profile) => profile.deviceId === nextCameraId);
+        const nextProfile = getBestProfileForFocalMode(
+          labeledProfiles.filter((profile) => profile.deviceId === nextCameraId),
+          DEFAULT_FOCAL_MODE_KEY,
+        );
         saveWideCameraSelection(nextCameraId, storedSelection.manual && nextCameraId === storedSelection.deviceId);
         setStatus(
           nextProfile?.settings?.width && nextProfile?.settings?.height
@@ -1253,17 +1442,24 @@ export default function App() {
     }
   }
 
-  async function startCamera(deviceId) {
+  async function startCamera(deviceId, { forceRestart = false } = {}) {
     setError('');
 
-    if (cameraStreamRef.current?.active && (activeCameraIdRef.current === deviceId || !deviceId)) {
+    if (!forceRestart && cameraStreamRef.current?.active && (activeCameraIdRef.current === deviceId || !deviceId)) {
       if (previewRef.current) {
         previewRef.current.srcObject = cameraStreamRef.current;
         previewRef.current.onloadedmetadata = () => startPreviewRenderer();
       }
+      if (focalModeRef.current !== DEFAULT_FOCAL_MODE_KEY) {
+        applyFocalModeToStream(cameraStreamRef.current, focalModeRef.current).catch(() => {
+          focalDigitalScaleRef.current = getFocalMode(focalModeRef.current).digitalScale;
+        });
+      } else {
+        focalDigitalScaleRef.current = 1;
+      }
       startPreviewRenderer();
       setCameraReady(true);
-      setStatus('Prêt à enregistrer');
+      setStatus(`Prêt à enregistrer · ${getFocalMode(focalModeRef.current).summary}`);
       return;
     }
 
@@ -1272,12 +1468,15 @@ export default function App() {
     setStatus('Activation caméra');
 
     try {
-      const selectedProfile = cameraProfileById.get(deviceId);
+      const selectedProfile = getBestProfileForFocalMode(cameraProfilesById.get(deviceId) || [], focalModeRef.current);
       const selectedMode = getCameraTestMode(selectedProfile?.modeKey);
       const stream = await getWideCameraStream(deviceId, selectedMode.key);
-      const cameraSettings = await applyWideCameraTrackSettings(stream, {
-        forceResolution: selectedMode.forceResolution,
-      });
+      const wideSettings = await applyWideCameraTrackSettings(stream, { mode: selectedMode });
+      const focalResult =
+        focalModeRef.current === DEFAULT_FOCAL_MODE_KEY
+          ? { settings: wideSettings }
+          : await applyFocalModeToStream(stream, focalModeRef.current);
+      const cameraSettings = focalResult.settings;
 
       cameraStreamRef.current = stream;
       activeCameraIdRef.current = cameraSettings.deviceId || deviceId;
@@ -1287,14 +1486,10 @@ export default function App() {
       }
       startPreviewRenderer();
       setCameraReady(true);
-      setStatus(
-        cameraSettings.width && cameraSettings.height
-          ? `Prêt à enregistrer · ${cameraSettings.width}x${cameraSettings.height} · ${selectedMode.label}`
-          : 'Prêt à enregistrer',
-      );
+      setStatus(getReadyStatus(cameraSettings, selectedMode.label, focalModeRef.current));
       setCameraProfiles((profiles) =>
         profiles.map((profile) =>
-          profile.deviceId === deviceId
+          profile.deviceId === deviceId && profile.modeKey === selectedMode.key
             ? {
                 ...profile,
                 settings: cameraSettings,
@@ -1348,7 +1543,8 @@ export default function App() {
       context.fillRect(0, 0, TIKTOK_WIDTH, TIKTOK_HEIGHT);
 
       if (video.readyState >= 2 && video.videoWidth && video.videoHeight) {
-        const coverRect = getCoverRect(video.videoWidth, video.videoHeight, TIKTOK_WIDTH, TIKTOK_HEIGHT);
+        const baseCoverRect = getCoverRect(video.videoWidth, video.videoHeight, TIKTOK_WIDTH, TIKTOK_HEIGHT);
+        const coverRect = getFocalCoverRect(baseCoverRect, focalDigitalScaleRef.current);
         const { kelvin, tint } = whiteBalanceRef.current;
         const mirrored = mirrorEnabledRef.current;
 
@@ -1383,7 +1579,8 @@ export default function App() {
     sampleCanvas.width = TIKTOK_WIDTH;
     sampleCanvas.height = TIKTOK_HEIGHT;
     const sampleContext = sampleCanvas.getContext('2d', { willReadFrequently: true });
-    const coverRect = getCoverRect(video.videoWidth, video.videoHeight, TIKTOK_WIDTH, TIKTOK_HEIGHT);
+    const baseCoverRect = getCoverRect(video.videoWidth, video.videoHeight, TIKTOK_WIDTH, TIKTOK_HEIGHT);
+    const coverRect = getFocalCoverRect(baseCoverRect, focalDigitalScaleRef.current);
     drawVideoFrame(sampleContext, video, coverRect, mirrorEnabledRef.current);
 
     const radius = 18;
@@ -1619,6 +1816,7 @@ export default function App() {
           </span>
           <div>
             <p>ReTok Studio</p>
+            <h1>{currentView === 'library' ? 'Bibliothèque' : 'Enregistrer une take'}</h1>
           </div>
         </div>
         <div className="topbar-actions">
@@ -1631,6 +1829,10 @@ export default function App() {
             {currentView === 'library' ? <ArrowLeft size={16} /> : <Library size={16} />}
             {currentView === 'library' ? 'Studio' : `Bibliothèque (${libraryItems.length})`}
           </button>
+          <div className="status" aria-live="polite">
+            <span className={isRecording ? 'status-dot live' : 'status-dot'} />
+            {currentView === 'library' ? `${libraryItems.length} vidéo${libraryItems.length > 1 ? 's' : ''}` : status}
+          </div>
         </div>
       </header>
 
@@ -1685,6 +1887,32 @@ export default function App() {
               ))}
             </select>
           </label>
+
+          <section className="focal-mode-panel" aria-label="Focale">
+            <span>
+              <Focus size={17} />
+              Focale
+            </span>
+            <div className="focal-mode-options" role="group" aria-label="Mode de focale">
+              {FOCAL_MODES.map((mode) => (
+                <button
+                  key={mode.key}
+                  className={focalMode === mode.key ? 'active' : ''}
+                  type="button"
+                  aria-pressed={focalMode === mode.key}
+                  disabled={!sourcesOpen || isRecording}
+                  title={mode.summary}
+                  onClick={() => {
+                    focalDigitalScaleRef.current = mode.digitalScale;
+                    setFocalMode(mode.key);
+                  }}
+                >
+                  <strong>{mode.label}</strong>
+                  <small>{mode.summary}</small>
+                </button>
+              ))}
+            </div>
+          </section>
 
           <label className="source-field" htmlFor="audio-select">
             <span>
