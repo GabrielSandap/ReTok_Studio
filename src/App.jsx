@@ -1669,8 +1669,7 @@ export default function App() {
             </div>
           </div>
 
-          {sourcesOpen && (
-          <>
+          <div className="sources-panel-content" aria-hidden={!sourcesOpen}>
           <label className="source-field" htmlFor="camera-select">
             <span>
               <Camera size={17} />
@@ -1683,7 +1682,7 @@ export default function App() {
                 saveWideCameraSelection(event.target.value, true);
                 setSelectedCameraId(event.target.value);
               }}
-              disabled={isRecording || isScanningCameras}
+              disabled={!sourcesOpen || isRecording || isScanningCameras}
             >
               {cameras.map((device, index) => (
                 <option key={`camera-${device.deviceId || index}`} value={device.deviceId}>
@@ -1702,7 +1701,7 @@ export default function App() {
               id="audio-select"
               value={selectedAudioId}
               onChange={(event) => setSelectedAudioId(event.target.value)}
-              disabled={isRecording}
+              disabled={!sourcesOpen || isRecording}
             >
               {audioInputs.map((device, index) => (
                 <option key={`audio-${device.deviceId || index}`} value={device.deviceId}>
@@ -1735,7 +1734,7 @@ export default function App() {
           <button
             className={mirrorEnabled ? 'mirror-toggle active' : 'mirror-toggle'}
             type="button"
-            disabled={isRecording}
+            disabled={!sourcesOpen || isRecording}
             aria-pressed={mirrorEnabled}
             onClick={() => setMirrorEnabled((enabled) => !enabled)}
           >
@@ -1751,6 +1750,7 @@ export default function App() {
               <span>Balance blancs</span>
               <button
                 type="button"
+                disabled={!sourcesOpen}
                 onClick={() => {
                   setWhiteBalancePickerActive(false);
                   setWhiteBalanceKelvin(DEFAULT_WHITE_BALANCE_KELVIN);
@@ -1763,6 +1763,7 @@ export default function App() {
             <button
               className={whiteBalancePickerActive ? 'auto-white-button active-picker' : 'auto-white-button'}
               type="button"
+              disabled={!sourcesOpen}
               onClick={() => setWhiteBalancePickerActive((value) => !value)}
             >
               <Crosshair size={15} />
@@ -1780,6 +1781,7 @@ export default function App() {
                 max="8000"
                 step="50"
                 value={whiteBalanceKelvin}
+                disabled={!sourcesOpen}
                 onChange={(event) => setWhiteBalanceKelvin(clampNumber(event.target.value, 2800, 8000))}
               />
             </label>
@@ -1795,6 +1797,7 @@ export default function App() {
                 max="40"
                 step="1"
                 value={whiteBalanceTint}
+                disabled={!sourcesOpen}
                 onChange={(event) => setWhiteBalanceTint(clampNumber(event.target.value, -40, 40))}
               />
             </label>
@@ -1815,8 +1818,7 @@ export default function App() {
               ? 'Les nouvelles takes seront enregistrées en MP4.'
               : "MP4 natif indisponible dans ce navigateur. Les takes restent consultables en WebM."}
           </p>
-          </>
-          )}
+          </div>
         </aside>
 
         <section className="stage" aria-label="Aperçu et enregistrement">
