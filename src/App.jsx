@@ -1619,7 +1619,6 @@ export default function App() {
           </span>
           <div>
             <p>ReTok Studio</p>
-            <h1>{currentView === 'library' ? 'Bibliothèque' : 'Enregistrer une take'}</h1>
           </div>
         </div>
         <div className="topbar-actions">
@@ -1632,10 +1631,6 @@ export default function App() {
             {currentView === 'library' ? <ArrowLeft size={16} /> : <Library size={16} />}
             {currentView === 'library' ? 'Studio' : `Bibliothèque (${libraryItems.length})`}
           </button>
-          <div className="status" aria-live="polite">
-            <span className={isRecording ? 'status-dot live' : 'status-dot'} />
-            {currentView === 'library' ? `${libraryItems.length} vidéo${libraryItems.length > 1 ? 's' : ''}` : status}
-          </div>
         </div>
       </header>
 
