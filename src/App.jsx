@@ -162,11 +162,15 @@ function getWideLabelScore(label) {
   let score = 0;
 
   if (/iphone|continuity|perso/.test(normalizedLabel)) score += 55;
-  if (/obs|virtual/.test(normalizedLabel)) score += 38;
   if (/wide|ultra|grand angle|large/.test(normalizedLabel)) score += 34;
   if (/facetime/.test(normalizedLabel)) score -= 10;
 
   return score;
+}
+
+function isObsVirtualCamera(label = '') {
+  const normalizedLabel = label.toLowerCase();
+  return /obs/.test(normalizedLabel) || /virtual camera/.test(normalizedLabel);
 }
 
 function scoreCameraProfile(label, settings, capabilities, modeKey = 'natural') {
@@ -194,14 +198,14 @@ function scoreCameraProfile(label, settings, capabilities, modeKey = 'natural') 
   );
 }
 
-function getBestCameraProfile(profiles) {
+function getBestCameraProfile(profiles, { allowObsVirtual = true } = {}) {
   return [...profiles]
-    .filter((profile) => profile.available)
+    .filter((profile) => profile.available && (allowObsVirtual || !isObsVirtualCamera(profile.label)))
     .sort((first, second) => second.score - first.score)[0] || null;
 }
 
 function pickBestWideCamera(profiles, storedSelection) {
-  const bestProfile = getBestCameraProfile(profiles);
+  const bestProfile = getBestCameraProfile(profiles, { allowObsVirtual: false }) || getBestCameraProfile(profiles);
   const storedProfile = storedSelection.manual
     ? profiles.find((profile) => profile.available && profile.deviceId === storedSelection.deviceId)
     : null;
@@ -1036,7 +1040,12 @@ export default function App() {
     () => new Map(cameraProfiles.map((profile) => [profile.deviceId, profile])),
     [cameraProfiles],
   );
-  const recommendedCameraId = useMemo(() => getBestCameraProfile(cameraProfiles)?.deviceId || '', [cameraProfiles]);
+  const recommendedCameraId = useMemo(
+    () =>
+      (getBestCameraProfile(cameraProfiles, { allowObsVirtual: false }) || getBestCameraProfile(cameraProfiles))
+        ?.deviceId || '',
+    [cameraProfiles],
+  );
   const selectedCameraLabel = useMemo(() => {
     const profile = cameraProfileById.get(selectedCameraId);
     return profile?.label || deviceName(cameras, selectedCameraId, 'Caméra');
