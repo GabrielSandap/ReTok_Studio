@@ -192,6 +192,11 @@ h1 {
   height: 100%;
   min-height: 0;
   overflow: hidden;
+  transition: grid-template-columns 180ms ease;
+}
+
+.workspace.sources-collapsed {
+  grid-template-columns: 58px minmax(420px, 1fr);
 }
 
 .setup-panel,
@@ -213,6 +218,15 @@ h1 {
 
 .setup-panel {
   grid-template-rows: auto auto auto auto auto auto minmax(0, 1fr) auto;
+  transition:
+    padding 180ms ease,
+    background 180ms ease;
+}
+
+.setup-panel.collapsed {
+  grid-template-rows: auto;
+  justify-items: center;
+  padding: 10px;
 }
 
 .library-panel {
@@ -372,6 +386,21 @@ h1 {
   font-weight: 850;
 }
 
+.panel-title > span,
+.panel-actions {
+  display: flex;
+  align-items: center;
+}
+
+.panel-title > span {
+  min-width: 0;
+  gap: 8px;
+}
+
+.panel-actions {
+  gap: 8px;
+}
+
 .panel-title button {
   display: grid;
   width: 36px;
@@ -382,6 +411,34 @@ h1 {
   color: var(--muted);
   background: var(--surface);
   cursor: pointer;
+}
+
+.panel-title button:disabled {
+  cursor: not-allowed;
+  opacity: 0.54;
+}
+
+.setup-panel.collapsed .panel-title {
+  width: 100%;
+  flex-direction: column;
+  justify-content: flex-start;
+  padding-bottom: 0;
+}
+
+.setup-panel.collapsed .panel-title > span {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--accent-dark);
+  background: color-mix(in srgb, var(--surface-muted) 70%, var(--surface));
+  font-size: 0;
+}
+
+.setup-panel.collapsed .panel-actions {
+  flex-direction: column;
 }
 
 .panel-title strong {

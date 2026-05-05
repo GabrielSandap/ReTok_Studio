@@ -3,6 +3,8 @@ import {
   ArrowLeft,
   Camera,
   Check,
+  ChevronLeft,
+  ChevronRight,
   CircleStop,
   Crosshair,
   FlipHorizontal,
@@ -1021,6 +1023,7 @@ export default function App() {
   const [renameValue, setRenameValue] = useState('');
   const [libraryError, setLibraryError] = useState('');
   const [currentView, setCurrentView] = useState('studio');
+  const [sourcesOpen, setSourcesOpen] = useState(false);
   const [whiteBalancePickerActive, setWhiteBalancePickerActive] = useState(false);
   const [mirrorEnabled, setMirrorEnabled] = useState(() => localStorage.getItem('retok-mirror-enabled') !== 'false');
   const [whiteBalanceKelvin, setWhiteBalanceKelvin] = useState(() =>
@@ -1637,15 +1640,37 @@ export default function App() {
       </header>
 
       {currentView === 'studio' ? (
-      <section className="workspace">
-        <aside className="setup-panel" aria-label="Sources">
+      <section className={sourcesOpen ? 'workspace' : 'workspace sources-collapsed'}>
+        <aside className={sourcesOpen ? 'setup-panel' : 'setup-panel collapsed'} aria-label="Sources">
           <div className="panel-title">
-            <span>Sources</span>
-            <button type="button" onClick={refreshDevices} aria-label="Actualiser les sources" disabled={isRecording || isScanningCameras}>
-              <RefreshCw size={16} />
-            </button>
+            <span>
+              {!sourcesOpen && <Camera size={17} />}
+              Sources
+            </span>
+            <div className="panel-actions">
+              {sourcesOpen && (
+                <button
+                  type="button"
+                  onClick={refreshDevices}
+                  aria-label="Actualiser les sources"
+                  disabled={isRecording || isScanningCameras}
+                >
+                  <RefreshCw size={16} />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setSourcesOpen((open) => !open)}
+                aria-expanded={sourcesOpen}
+                aria-label={sourcesOpen ? 'Fermer les sources' : 'Ouvrir les sources'}
+              >
+                {sourcesOpen ? <ChevronLeft size={17} /> : <ChevronRight size={17} />}
+              </button>
+            </div>
           </div>
 
+          {sourcesOpen && (
+          <>
           <label className="source-field" htmlFor="camera-select">
             <span>
               <Camera size={17} />
@@ -1790,6 +1815,8 @@ export default function App() {
               ? 'Les nouvelles takes seront enregistrées en MP4.'
               : "MP4 natif indisponible dans ce navigateur. Les takes restent consultables en WebM."}
           </p>
+          </>
+          )}
         </aside>
 
         <section className="stage" aria-label="Aperçu et enregistrement">
