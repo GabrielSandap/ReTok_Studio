@@ -11,11 +11,14 @@ import {
   Focus,
   Library,
   Download,
+  Maximize2,
   Mic2,
+  Minimize2,
   Pencil,
   Play,
   RefreshCw,
   Trash2,
+  Type,
   Video,
 } from 'lucide-react';
 
@@ -26,17 +29,35 @@ const TIKTOK_WIDTH = 1080;
 const TIKTOK_HEIGHT = 1920;
 const CAMERA_ASPECT_RATIO = 16 / 9;
 const DISPOSABLE_NOISE_POINTS = 2200;
+const DISPOSABLE_NOISE_REFRESH_RATE = 6;
 const DEFAULT_WHITE_BALANCE_KELVIN = 5200;
 const DEFAULT_WHITE_BALANCE_TINT = 0;
-const SKIN_SMOOTHING_SCALE = 0.22;
+const DEFAULT_RAW_SATURATION = 100;
+const DEFAULT_RAW_CONTRAST = 100;
+const DEFAULT_RAW_BRIGHTNESS = 100;
+const SKIN_SMOOTHING_SCALE = 0.16;
 const SKIN_SMOOTHING_ALPHA = 0.38;
-const HALATION_SCALE = 0.18;
-const HALATION_ALPHA = 0.48;
-const RETRO_GLOW_SCALE = 0.16;
-const RETRO_GLOW_ALPHA = 0.2;
+const DENOISE_SCALE = 0.42;
 const WIDE_CAMERA_STORAGE_KEY = 'retok-wide-camera-id';
 const WIDE_CAMERA_MANUAL_KEY = 'retok-wide-camera-manual';
 const DEFAULT_FOCAL_MODE_KEY = 'wide';
+const PREVIEW_STACK_POSITION_STORAGE_KEY = 'retok-preview-stack-position';
+const PREVIEW_STACK_WIDTH_STORAGE_KEY = 'retok-preview-stack-width';
+const TEXT_BOXES_STORAGE_KEY = 'retok-text-boxes';
+const DEFAULT_PREVIEW_STACK_POSITION = { x: 50, y: 54 };
+const DEFAULT_PREVIEW_STACK_WIDTH = 430;
+const MIN_PREVIEW_STACK_WIDTH = 220;
+const MAX_PREVIEW_STACK_WIDTH = 760;
+const DEFAULT_TEXT_BOX_WIDTH = 760;
+const MIN_TEXT_BOX_WIDTH = 240;
+const MAX_TEXT_BOX_WIDTH = 1280;
+const DEFAULT_TEXT_BOX_HEIGHT = 220;
+const MIN_TEXT_BOX_HEIGHT = 92;
+const MAX_TEXT_BOX_HEIGHT = 860;
+const DEFAULT_TEXT_BOX_FONT_SIZE = 20;
+const MIN_TEXT_BOX_FONT_SIZE = 14;
+const MAX_TEXT_BOX_FONT_SIZE = 40;
+const TEXT_BOX_FONT_SIZES = [14, 16, 18, 20, 24, 28, 32, 36, 40];
 
 const FOCAL_MODES = [
   { key: 'wide', label: '0.5x', summary: 'Grand angle', targetZoom: 'min', digitalScale: 1, profileMode: 'wide' },
@@ -114,8 +135,8 @@ const CAMERA_TEST_MODES = [
 ];
 
 let skinSmoothingBuffers;
-let halationBuffers;
-let retroGlowBuffers;
+let qualityBuffers;
+let disposableLookBuffers;
 
 const RECORDER_FORMATS = [
   { mimeType: 'video/mp4;codecs=avc1.42E01E,mp4a.40.2', extension: 'mp4', label: 'MP4' },
@@ -228,6 +249,54 @@ function saveWideCameraSelection(deviceId, manual) {
   if (typeof localStorage === 'undefined' || !deviceId) return;
   localStorage.setItem(WIDE_CAMERA_STORAGE_KEY, deviceId);
   localStorage.setItem(WIDE_CAMERA_MANUAL_KEY, String(manual));
+}
+
+function readStoredPreviewStackPosition() {
+  if (typeof localStorage === 'undefined') return DEFAULT_PREVIEW_STACK_POSITION;
+
+  try {
+    const storedPosition = JSON.parse(localStorage.getItem(PREVIEW_STACK_POSITION_STORAGE_KEY) || '{}');
+    return {
+      x: clampNumber(storedPosition.x || DEFAULT_PREVIEW_STACK_POSITION.x, 0, 100),
+      y: clampNumber(storedPosition.y || DEFAULT_PREVIEW_STACK_POSITION.y, 0, 100),
+    };
+  } catch {
+    return DEFAULT_PREVIEW_STACK_POSITION;
+  }
+}
+
+function readStoredPreviewStackWidth() {
+  if (typeof localStorage === 'undefined') return DEFAULT_PREVIEW_STACK_WIDTH;
+  return clampNumber(localStorage.getItem(PREVIEW_STACK_WIDTH_STORAGE_KEY) || DEFAULT_PREVIEW_STACK_WIDTH, MIN_PREVIEW_STACK_WIDTH, MAX_PREVIEW_STACK_WIDTH);
+}
+
+function readStoredTextBoxes() {
+  if (typeof localStorage === 'undefined') return [];
+
+  try {
+    const storedTextBoxes = JSON.parse(localStorage.getItem(TEXT_BOXES_STORAGE_KEY) || '[]');
+    if (!Array.isArray(storedTextBoxes)) return [];
+
+    return storedTextBoxes
+      .filter((box) => box && typeof box.id === 'string')
+      .map((box) => {
+        const storedWidth = Number(box.width) || DEFAULT_TEXT_BOX_WIDTH;
+        const migratedWidth = storedWidth < DEFAULT_TEXT_BOX_WIDTH ? DEFAULT_TEXT_BOX_WIDTH : storedWidth;
+
+        return {
+          id: box.id,
+          text: typeof box.text === 'string' ? box.text : 'Texte',
+          x: clampNumber(box.x ?? 50, 0, 100),
+          y: clampNumber(box.y ?? 50, 0, 100),
+          width: clampNumber(migratedWidth, MIN_TEXT_BOX_WIDTH, MAX_TEXT_BOX_WIDTH),
+          height: clampNumber(box.height || DEFAULT_TEXT_BOX_HEIGHT, MIN_TEXT_BOX_HEIGHT, MAX_TEXT_BOX_HEIGHT),
+          fontSize: clampNumber(box.fontSize || DEFAULT_TEXT_BOX_FONT_SIZE, MIN_TEXT_BOX_FONT_SIZE, MAX_TEXT_BOX_FONT_SIZE),
+          minimized: Boolean(box.minimized),
+        };
+      });
+  } catch {
+    return [];
+  }
 }
 
 function getWideLabelScore(label) {
@@ -800,6 +869,14 @@ function makeWhiteBalanceFilter(kelvin, tint) {
   ].join(' ');
 }
 
+function makeRawImageFilter({ saturation, contrast, brightness }) {
+  return [
+    `saturate(${(clampNumber(saturation, 0, 200) / 100).toFixed(3)})`,
+    `contrast(${(clampNumber(contrast, 50, 150) / 100).toFixed(3)})`,
+    `brightness(${(clampNumber(brightness, 50, 150) / 100).toFixed(3)})`,
+  ].join(' ');
+}
+
 function applyWhiteBalanceWash(context, width, height, kelvin, tint) {
   const temperature = clampNumber(kelvin, 2800, 8000);
   const tintValue = clampNumber(tint, -40, 40);
@@ -931,183 +1008,138 @@ function applySubtleSkinSmoothing(context, width, height) {
   context.restore();
 }
 
-function getHalationBuffers(width, height) {
-  const scaledWidth = Math.max(1, Math.round(width * HALATION_SCALE));
-  const scaledHeight = Math.max(1, Math.round(height * HALATION_SCALE));
+function getQualityBuffers(width, height) {
+  const denoiseWidth = Math.max(1, Math.round(width * DENOISE_SCALE));
+  const denoiseHeight = Math.max(1, Math.round(height * DENOISE_SCALE));
 
-  if (!halationBuffers) {
-    halationBuffers = {
-      source: document.createElement('canvas'),
-      highlight: document.createElement('canvas'),
-      glow: document.createElement('canvas'),
+  if (!qualityBuffers) {
+    qualityBuffers = {
+      denoise: document.createElement('canvas'),
+      lens: document.createElement('canvas'),
     };
   }
 
-  Object.values(halationBuffers).forEach((canvas) => {
-    if (canvas.width !== scaledWidth || canvas.height !== scaledHeight) {
-      canvas.width = scaledWidth;
-      canvas.height = scaledHeight;
-    }
-  });
-
-  return { ...halationBuffers, width: scaledWidth, height: scaledHeight };
-}
-
-function applyHalationGlow(context, width, height) {
-  const buffers = getHalationBuffers(width, height);
-  const sourceContext = buffers.source.getContext('2d', { willReadFrequently: true });
-  const highlightContext = buffers.highlight.getContext('2d', { willReadFrequently: true });
-  const glowContext = buffers.glow.getContext('2d');
-
-  sourceContext.clearRect(0, 0, buffers.width, buffers.height);
-  sourceContext.drawImage(context.canvas, 0, 0, buffers.width, buffers.height);
-
-  const sourcePixels = sourceContext.getImageData(0, 0, buffers.width, buffers.height);
-  const highlightPixels = highlightContext.createImageData(buffers.width, buffers.height);
-
-  for (let index = 0; index < sourcePixels.data.length; index += 4) {
-    const r = sourcePixels.data[index];
-    const g = sourcePixels.data[index + 1];
-    const b = sourcePixels.data[index + 2];
-    const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
-    const warmth = clampNumber((r - b + 42) / 118, 0.28, 1);
-    const highlightStrength = clampNumber((luminance - 172) / 70, 0, 1);
-    const alpha = Math.round(highlightStrength * warmth * 178);
-
-    highlightPixels.data[index] = 255;
-    highlightPixels.data[index + 1] = 92 + Math.round(48 * highlightStrength);
-    highlightPixels.data[index + 2] = 32;
-    highlightPixels.data[index + 3] = alpha;
+  if (qualityBuffers.denoise.width !== denoiseWidth || qualityBuffers.denoise.height !== denoiseHeight) {
+    qualityBuffers.denoise.width = denoiseWidth;
+    qualityBuffers.denoise.height = denoiseHeight;
+    qualityBuffers.lens.width = denoiseWidth;
+    qualityBuffers.lens.height = denoiseHeight;
   }
 
-  highlightContext.clearRect(0, 0, buffers.width, buffers.height);
-  highlightContext.putImageData(highlightPixels, 0, 0);
+  return { ...qualityBuffers, denoiseWidth, denoiseHeight };
+}
 
-  glowContext.clearRect(0, 0, buffers.width, buffers.height);
-  glowContext.filter = 'blur(6px)';
-  glowContext.drawImage(buffers.highlight, 0, 0);
-  glowContext.filter = 'blur(13px)';
-  glowContext.globalAlpha = 0.54;
-  glowContext.drawImage(buffers.highlight, 0, 0);
-  glowContext.globalAlpha = 1;
-  glowContext.filter = 'none';
+function applySubtleDenoiseAndLensSoftening(context, width, height) {
+  const buffers = getQualityBuffers(width, height);
+  const denoiseContext = buffers.denoise.getContext('2d');
+  const lensContext = buffers.lens.getContext('2d');
+
+  denoiseContext.clearRect(0, 0, buffers.denoiseWidth, buffers.denoiseHeight);
+  denoiseContext.imageSmoothingEnabled = true;
+  denoiseContext.imageSmoothingQuality = 'high';
+  denoiseContext.drawImage(context.canvas, 0, 0, buffers.denoiseWidth, buffers.denoiseHeight);
 
   context.save();
-  context.globalCompositeOperation = 'screen';
-  context.globalAlpha = HALATION_ALPHA;
+  context.globalAlpha = 0.14;
   context.imageSmoothingEnabled = true;
-  context.drawImage(buffers.glow, 0, 0, width, height);
+  context.imageSmoothingQuality = 'high';
+  context.drawImage(buffers.denoise, 0, 0, width, height);
+  context.restore();
+
+  lensContext.clearRect(0, 0, buffers.denoiseWidth, buffers.denoiseHeight);
+  lensContext.filter = 'blur(0.8px)';
+  lensContext.drawImage(buffers.denoise, 0, 0);
+  lensContext.filter = 'none';
+
+  context.save();
+  context.globalAlpha = 0.05;
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = 'high';
+  context.drawImage(buffers.lens, 0, 0, width, height);
   context.restore();
 }
 
-function getRetroGlowBuffers(width, height) {
-  const scaledWidth = Math.max(1, Math.round(width * RETRO_GLOW_SCALE));
-  const scaledHeight = Math.max(1, Math.round(height * RETRO_GLOW_SCALE));
-
-  if (!retroGlowBuffers) {
-    retroGlowBuffers = {
-      source: document.createElement('canvas'),
-      glow: document.createElement('canvas'),
+function getDisposableLookBuffers(width, height) {
+  if (!disposableLookBuffers) {
+    disposableLookBuffers = {
+      overlay: document.createElement('canvas'),
+      noise: document.createElement('canvas'),
+      noiseFrame: -1,
     };
   }
 
-  Object.values(retroGlowBuffers).forEach((canvas) => {
-    if (canvas.width !== scaledWidth || canvas.height !== scaledHeight) {
-      canvas.width = scaledWidth;
-      canvas.height = scaledHeight;
-    }
-  });
+  if (disposableLookBuffers.overlay.width !== width || disposableLookBuffers.overlay.height !== height) {
+    disposableLookBuffers.overlay.width = width;
+    disposableLookBuffers.overlay.height = height;
 
-  return { ...retroGlowBuffers, width: scaledWidth, height: scaledHeight };
+    const overlayContext = disposableLookBuffers.overlay.getContext('2d');
+    overlayContext.clearRect(0, 0, width, height);
+    overlayContext.globalCompositeOperation = 'source-over';
+    overlayContext.fillStyle = 'rgba(255, 205, 118, 0.078)';
+    overlayContext.fillRect(0, 0, width, height);
+    overlayContext.globalCompositeOperation = 'screen';
+    overlayContext.fillStyle = 'rgba(255, 92, 112, 0.034)';
+    overlayContext.fillRect(0, 0, width, height);
+    overlayContext.globalCompositeOperation = 'overlay';
+    overlayContext.fillStyle = 'rgba(255, 244, 205, 0.05)';
+    overlayContext.fillRect(0, 0, width, height);
+    overlayContext.globalCompositeOperation = 'screen';
+
+    const flashBloom = overlayContext.createRadialGradient(width * 0.42, height * 0.34, 0, width * 0.42, height * 0.34, height * 0.58);
+    flashBloom.addColorStop(0, 'rgba(255, 238, 190, 0.095)');
+    flashBloom.addColorStop(0.48, 'rgba(255, 220, 150, 0.028)');
+    flashBloom.addColorStop(1, 'rgba(255, 220, 150, 0)');
+    overlayContext.fillStyle = flashBloom;
+    overlayContext.fillRect(0, 0, width, height);
+
+    overlayContext.globalCompositeOperation = 'source-over';
+    const vignette = overlayContext.createRadialGradient(width / 2, height / 2, height * 0.18, width / 2, height / 2, height * 0.64);
+    vignette.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    vignette.addColorStop(0.78, 'rgba(0, 0, 0, 0.03)');
+    vignette.addColorStop(1, 'rgba(55, 32, 18, 0.22)');
+    overlayContext.fillStyle = vignette;
+    overlayContext.fillRect(0, 0, width, height);
+  }
+
+  if (disposableLookBuffers.noise.width !== width || disposableLookBuffers.noise.height !== height) {
+    disposableLookBuffers.noise.width = width;
+    disposableLookBuffers.noise.height = height;
+    disposableLookBuffers.noiseFrame = -1;
+  }
+
+  return disposableLookBuffers;
 }
 
-function applyRetroKodakGlow(context, width, height) {
-  const buffers = getRetroGlowBuffers(width, height);
-  const sourceContext = buffers.source.getContext('2d');
-  const glowContext = buffers.glow.getContext('2d');
+function refreshDisposableNoise(noiseCanvas, frameNumber) {
+  const noiseContext = noiseCanvas.getContext('2d');
+  noiseContext.clearRect(0, 0, noiseCanvas.width, noiseCanvas.height);
+  noiseContext.globalAlpha = 0.018;
 
-  sourceContext.clearRect(0, 0, buffers.width, buffers.height);
-  sourceContext.drawImage(context.canvas, 0, 0, buffers.width, buffers.height);
+  for (let index = 0; index < DISPOSABLE_NOISE_POINTS * 0.18; index += 1) {
+    const x = Math.random() * noiseCanvas.width;
+    const y = Math.random() * noiseCanvas.height;
+    const shade = 150 + Math.random() * 105;
+    noiseContext.fillStyle = `rgb(${shade}, ${Math.min(255, shade + 7)}, ${Math.max(0, shade - 10)})`;
+    noiseContext.fillRect(x, y, 1.2, 1.2);
+  }
 
-  glowContext.clearRect(0, 0, buffers.width, buffers.height);
-  glowContext.filter = 'blur(7px) saturate(1.18) brightness(1.08)';
-  glowContext.globalAlpha = 0.92;
-  glowContext.drawImage(buffers.source, 0, 0);
-  glowContext.filter = 'blur(18px) saturate(1.1) brightness(1.05)';
-  glowContext.globalAlpha = 0.5;
-  glowContext.drawImage(buffers.source, 0, 0);
-  glowContext.globalAlpha = 1;
-  glowContext.filter = 'none';
-  glowContext.globalCompositeOperation = 'source-atop';
-  glowContext.fillStyle = 'rgba(255, 176, 72, 0.18)';
-  glowContext.fillRect(0, 0, buffers.width, buffers.height);
-  glowContext.globalCompositeOperation = 'source-over';
-
-  context.save();
-  context.globalCompositeOperation = 'screen';
-  context.globalAlpha = RETRO_GLOW_ALPHA;
-  context.imageSmoothingEnabled = true;
-  context.drawImage(buffers.glow, 0, 0, width, height);
-  context.restore();
-
-  context.save();
-  const warmLift = context.createRadialGradient(width * 0.5, height * 0.43, 0, width * 0.5, height * 0.43, height * 0.72);
-  warmLift.addColorStop(0, 'rgba(255, 210, 130, 0.035)');
-  warmLift.addColorStop(0.62, 'rgba(255, 150, 72, 0.018)');
-  warmLift.addColorStop(1, 'rgba(255, 150, 72, 0)');
-  context.globalCompositeOperation = 'screen';
-  context.fillStyle = warmLift;
-  context.fillRect(0, 0, width, height);
-  context.restore();
+  return frameNumber;
 }
 
-function applyDisposableCameraLook(context, width, height) {
+function applyDisposableCameraLook(context, width, height, frameNumber) {
+  const buffers = getDisposableLookBuffers(width, height);
+
   context.save();
   context.globalCompositeOperation = 'source-atop';
-  context.fillStyle = 'rgba(255, 205, 118, 0.078)';
-  context.fillRect(0, 0, width, height);
-  context.globalCompositeOperation = 'screen';
-  context.fillStyle = 'rgba(255, 92, 112, 0.034)';
-  context.fillRect(0, 0, width, height);
-  context.globalCompositeOperation = 'overlay';
-  context.fillStyle = 'rgba(255, 244, 205, 0.05)';
-  context.fillRect(0, 0, width, height);
+  context.drawImage(buffers.overlay, 0, 0);
   context.restore();
 
-  context.save();
-  context.globalAlpha = 0.06;
-  for (let index = 0; index < DISPOSABLE_NOISE_POINTS; index += 1) {
-    const x = Math.random() * width;
-    const y = Math.random() * height;
-    const shade = 150 + Math.random() * 105;
-    context.fillStyle = `rgb(${shade}, ${Math.min(255, shade + 7)}, ${Math.max(0, shade - 10)})`;
-    context.fillRect(x, y, 1.9, 1.9);
+  if (buffers.noiseFrame < 0 || frameNumber % DISPOSABLE_NOISE_REFRESH_RATE === 0) {
+    buffers.noiseFrame = refreshDisposableNoise(buffers.noise, frameNumber);
   }
-  context.restore();
 
   context.save();
-  const flashBloom = context.createRadialGradient(width * 0.42, height * 0.34, 0, width * 0.42, height * 0.34, height * 0.58);
-  flashBloom.addColorStop(0, 'rgba(255, 238, 190, 0.095)');
-  flashBloom.addColorStop(0.48, 'rgba(255, 220, 150, 0.028)');
-  flashBloom.addColorStop(1, 'rgba(255, 220, 150, 0)');
-  context.fillStyle = flashBloom;
-  context.fillRect(0, 0, width, height);
-  context.restore();
-
-  context.save();
-  const vignette = context.createRadialGradient(
-    width / 2,
-    height / 2,
-    height * 0.18,
-    width / 2,
-    height / 2,
-    height * 0.64,
-  );
-  vignette.addColorStop(0, 'rgba(0, 0, 0, 0)');
-  vignette.addColorStop(0.78, 'rgba(0, 0, 0, 0.03)');
-  vignette.addColorStop(1, 'rgba(55, 32, 18, 0.22)');
-  context.fillStyle = vignette;
-  context.fillRect(0, 0, width, height);
+  context.drawImage(buffers.noise, 0, 0);
   context.restore();
 }
 
@@ -1124,6 +1156,8 @@ function estimateWhiteBalanceFromSample({ r, g, b }) {
 export default function App() {
   const previewRef = useRef(null);
   const canvasRef = useRef(null);
+  const stageRef = useRef(null);
+  const previewStackRef = useRef(null);
   const cameraStreamRef = useRef(null);
   const audioStreamRef = useRef(null);
   const monitorStreamRef = useRef(null);
@@ -1139,6 +1173,12 @@ export default function App() {
   const meterFrameRef = useRef(null);
   const activeCameraIdRef = useRef('');
   const cameraScanRunRef = useRef(0);
+  const previewStackDragRef = useRef(null);
+  const previewStackResizeRef = useRef(null);
+  const textBoxDragRef = useRef(null);
+  const textBoxResizeRef = useRef(null);
+  const textBoxClampFrameRef = useRef(null);
+  const textBoxStorageTimeoutRef = useRef(null);
   const focalModeRef = useRef(DEFAULT_FOCAL_MODE_KEY);
   const focalDigitalScaleRef = useRef(getFocalMode(DEFAULT_FOCAL_MODE_KEY).digitalScale);
 
@@ -1148,6 +1188,7 @@ export default function App() {
   const [selectedCameraId, setSelectedCameraId] = useState('');
   const [selectedAudioId, setSelectedAudioId] = useState('');
   const [focalMode, setFocalMode] = useState(DEFAULT_FOCAL_MODE_KEY);
+  const [activeCameraSettings, setActiveCameraSettings] = useState(null);
   const [status, setStatus] = useState('Sources non initialisées');
   const [error, setError] = useState('');
   const [isRecording, setIsRecording] = useState(false);
@@ -1165,6 +1206,14 @@ export default function App() {
   const [currentView, setCurrentView] = useState('studio');
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [whiteBalancePickerActive, setWhiteBalancePickerActive] = useState(false);
+  const [previewStackPosition, setPreviewStackPosition] = useState(readStoredPreviewStackPosition);
+  const [previewStackWidth, setPreviewStackWidth] = useState(readStoredPreviewStackWidth);
+  const [isDraggingPreviewStack, setIsDraggingPreviewStack] = useState(false);
+  const [isResizingPreviewStack, setIsResizingPreviewStack] = useState(false);
+  const [textToolActive, setTextToolActive] = useState(false);
+  const [textBoxes, setTextBoxes] = useState(readStoredTextBoxes);
+  const [draggingTextBoxId, setDraggingTextBoxId] = useState('');
+  const [resizingTextBoxId, setResizingTextBoxId] = useState('');
   const [mirrorEnabled, setMirrorEnabled] = useState(() => localStorage.getItem('retok-mirror-enabled') !== 'false');
   const [whiteBalanceKelvin, setWhiteBalanceKelvin] = useState(() =>
     clampNumber(localStorage.getItem('retok-white-balance-kelvin') || DEFAULT_WHITE_BALANCE_KELVIN, 2800, 8000),
@@ -1172,9 +1221,23 @@ export default function App() {
   const [whiteBalanceTint, setWhiteBalanceTint] = useState(() =>
     clampNumber(localStorage.getItem('retok-white-balance-tint') || DEFAULT_WHITE_BALANCE_TINT, -40, 40),
   );
+  const [rawSaturation, setRawSaturation] = useState(() =>
+    clampNumber(localStorage.getItem('retok-raw-saturation') || DEFAULT_RAW_SATURATION, 0, 200),
+  );
+  const [rawContrast, setRawContrast] = useState(() =>
+    clampNumber(localStorage.getItem('retok-raw-contrast') || DEFAULT_RAW_CONTRAST, 50, 150),
+  );
+  const [rawBrightness, setRawBrightness] = useState(() =>
+    clampNumber(localStorage.getItem('retok-raw-brightness') || DEFAULT_RAW_BRIGHTNESS, 50, 150),
+  );
   const whiteBalanceRef = useRef({
     kelvin: whiteBalanceKelvin,
     tint: whiteBalanceTint,
+  });
+  const rawImageRef = useRef({
+    saturation: rawSaturation,
+    contrast: rawContrast,
+    brightness: rawBrightness,
   });
   const whiteBalancePickerActiveRef = useRef(false);
   const mirrorEnabledRef = useRef(mirrorEnabled);
@@ -1214,14 +1277,24 @@ export default function App() {
     () => libraryItems.find((item) => item.id === selectedClipId) || libraryItems[0] || null,
     [libraryItems, selectedClipId],
   );
+  const textBoxGeometryKey = useMemo(
+    () =>
+      textBoxes
+        .map((box) =>
+          [box.id, box.x.toFixed(3), box.y.toFixed(3), box.width, box.height, box.fontSize, box.minimized ? 1 : 0].join(':'),
+        )
+        .join('|'),
+    [textBoxes],
+  );
   const mp4Supported = useMemo(() => isMp4RecordingSupported(), []);
 
-  function getReadyStatus(settings, modeLabel, focalModeKey = focalModeRef.current) {
-    const focalLabel = getFocalMode(focalModeKey).summary;
+  function getCameraQualityLabel(settings) {
+    if (!settings?.width || !settings?.height) return 'Qualité max';
 
-    return settings?.width && settings?.height
-      ? `Prêt à enregistrer · ${settings.width}x${settings.height} · ${modeLabel} · ${focalLabel}`
-      : `Prêt à enregistrer · ${focalLabel}`;
+    const frameRate = Number(settings.frameRate) || 0;
+    const frameRateLabel = frameRate ? ` · ${Math.round(frameRate)} fps` : '';
+
+    return `${settings.width}x${settings.height}${frameRateLabel}`;
   }
 
   async function applyFocalModeToStream(stream, modeKey = focalModeRef.current) {
@@ -1293,9 +1366,80 @@ export default function App() {
   }, [whiteBalancePickerActive]);
 
   useEffect(() => {
+    rawImageRef.current = {
+      saturation: rawSaturation,
+      contrast: rawContrast,
+      brightness: rawBrightness,
+    };
+    localStorage.setItem('retok-raw-saturation', String(rawSaturation));
+    localStorage.setItem('retok-raw-contrast', String(rawContrast));
+    localStorage.setItem('retok-raw-brightness', String(rawBrightness));
+  }, [rawSaturation, rawContrast, rawBrightness]);
+
+  useEffect(() => {
     mirrorEnabledRef.current = mirrorEnabled;
     localStorage.setItem('retok-mirror-enabled', String(mirrorEnabled));
   }, [mirrorEnabled]);
+
+  useEffect(() => {
+    localStorage.setItem(PREVIEW_STACK_POSITION_STORAGE_KEY, JSON.stringify(previewStackPosition));
+  }, [previewStackPosition]);
+
+  useEffect(() => {
+    localStorage.setItem(PREVIEW_STACK_WIDTH_STORAGE_KEY, String(previewStackWidth));
+    const frameId = requestAnimationFrame(() => {
+      setPreviewStackPosition((currentPosition) => clampPreviewStackPosition(currentPosition));
+    });
+
+    return () => cancelAnimationFrame(frameId);
+  }, [previewStackWidth]);
+
+  useEffect(() => {
+    if (textBoxStorageTimeoutRef.current) clearTimeout(textBoxStorageTimeoutRef.current);
+
+    textBoxStorageTimeoutRef.current = window.setTimeout(() => {
+      localStorage.setItem(TEXT_BOXES_STORAGE_KEY, JSON.stringify(textBoxes));
+    }, 180);
+
+    return () => clearTimeout(textBoxStorageTimeoutRef.current);
+  }, [textBoxes]);
+
+  useEffect(() => {
+    if (textBoxClampFrameRef.current) cancelAnimationFrame(textBoxClampFrameRef.current);
+
+    textBoxClampFrameRef.current = requestAnimationFrame(() => {
+      setTextBoxes((boxes) => {
+        const clampedBoxes = clampRenderedTextBoxes(boxes);
+        return haveTextBoxGeometriesChanged(boxes, clampedBoxes) ? clampedBoxes : boxes;
+      });
+      textBoxClampFrameRef.current = null;
+    });
+
+    return () => {
+      if (textBoxClampFrameRef.current) cancelAnimationFrame(textBoxClampFrameRef.current);
+    };
+  }, [textBoxGeometryKey, currentView, sourcesOpen]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setPreviewStackWidth((currentWidth) => clampPreviewStackWidth(currentWidth));
+      setPreviewStackPosition((currentPosition) => clampPreviewStackPosition(currentPosition));
+      setTextBoxes((boxes) => clampAllTextBoxes(boxes));
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  useEffect(() => {
+    const frameId = requestAnimationFrame(() => {
+      setPreviewStackWidth((currentWidth) => clampPreviewStackWidth(currentWidth));
+      setPreviewStackPosition((currentPosition) => clampPreviewStackPosition(currentPosition));
+      setTextBoxes((boxes) => clampAllTextBoxes(boxes));
+    });
+
+    return () => cancelAnimationFrame(frameId);
+  }, [currentView, sourcesOpen]);
 
   useEffect(() => {
     focalModeRef.current = focalMode;
@@ -1459,7 +1603,7 @@ export default function App() {
       }
       startPreviewRenderer();
       setCameraReady(true);
-      setStatus(`Prêt à enregistrer · ${getFocalMode(focalModeRef.current).summary}`);
+      setStatus('Prêt à enregistrer');
       return;
     }
 
@@ -1486,7 +1630,8 @@ export default function App() {
       }
       startPreviewRenderer();
       setCameraReady(true);
-      setStatus(getReadyStatus(cameraSettings, selectedMode.label, focalModeRef.current));
+      setActiveCameraSettings(cameraSettings);
+      setStatus('Prêt à enregistrer');
       setCameraProfiles((profiles) =>
         profiles.map((profile) =>
           profile.deviceId === deviceId && profile.modeKey === selectedMode.key
@@ -1516,6 +1661,7 @@ export default function App() {
     cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
     cameraStreamRef.current = null;
     activeCameraIdRef.current = '';
+    setActiveCameraSettings(null);
     if (updateState) setCameraReady(false);
   }
 
@@ -1526,11 +1672,12 @@ export default function App() {
 
   function startPreviewRenderer() {
     stopPreviewRenderer();
+    let frameNumber = 0;
 
     const drawFrame = () => {
       const canvas = canvasRef.current;
       const video = previewRef.current;
-      const context = canvas?.getContext('2d');
+      const context = canvas?.getContext('2d', { alpha: false });
 
       if (!canvas || !video || !context) return;
       if (canvas.width !== TIKTOK_WIDTH || canvas.height !== TIKTOK_HEIGHT) {
@@ -1543,9 +1690,11 @@ export default function App() {
       context.fillRect(0, 0, TIKTOK_WIDTH, TIKTOK_HEIGHT);
 
       if (video.readyState >= 2 && video.videoWidth && video.videoHeight) {
+        frameNumber += 1;
         const baseCoverRect = getCoverRect(video.videoWidth, video.videoHeight, TIKTOK_WIDTH, TIKTOK_HEIGHT);
         const coverRect = getFocalCoverRect(baseCoverRect, focalDigitalScaleRef.current);
         const { kelvin, tint } = whiteBalanceRef.current;
+        const rawImage = rawImageRef.current;
         const mirrored = mirrorEnabledRef.current;
 
         if (whiteBalancePickerActiveRef.current) {
@@ -1555,14 +1704,13 @@ export default function App() {
         }
 
         context.save();
-        context.filter = makeWhiteBalanceFilter(kelvin, tint);
+        context.filter = `${makeRawImageFilter(rawImage)} ${makeWhiteBalanceFilter(kelvin, tint)}`;
         drawVideoFrame(context, video, coverRect, mirrored);
         context.restore();
         applyWhiteBalanceWash(context, TIKTOK_WIDTH, TIKTOK_HEIGHT, kelvin, tint);
+        applySubtleDenoiseAndLensSoftening(context, TIKTOK_WIDTH, TIKTOK_HEIGHT);
         applySubtleSkinSmoothing(context, TIKTOK_WIDTH, TIKTOK_HEIGHT);
-        applyHalationGlow(context, TIKTOK_WIDTH, TIKTOK_HEIGHT);
-        applyRetroKodakGlow(context, TIKTOK_WIDTH, TIKTOK_HEIGHT);
-        applyDisposableCameraLook(context, TIKTOK_WIDTH, TIKTOK_HEIGHT);
+        applyDisposableCameraLook(context, TIKTOK_WIDTH, TIKTOK_HEIGHT, frameNumber);
       }
 
       previewFrameRef.current = requestAnimationFrame(drawFrame);
@@ -1619,6 +1767,415 @@ export default function App() {
     setWhiteBalanceKelvin(nextWhiteBalance.kelvin);
     setWhiteBalanceTint(nextWhiteBalance.tint);
     setWhiteBalancePickerActive(false);
+  }
+
+  function clampPreviewStackWidth(width) {
+    const stageRect = stageRef.current?.getBoundingClientRect();
+    const requestedWidth = clampNumber(width, MIN_PREVIEW_STACK_WIDTH, MAX_PREVIEW_STACK_WIDTH);
+
+    if (!stageRect?.width || !stageRect?.height) return requestedWidth;
+
+    const sideInset = 14;
+    const topInset = 72;
+    const bottomInset = 14;
+    const controlsHeight = 54;
+    const maxByWidth = stageRect.width - sideInset * 2;
+    const maxByHeight = Math.max(
+      MIN_PREVIEW_STACK_WIDTH,
+      ((stageRect.height - topInset - bottomInset - controlsHeight) * 9) / 16,
+    );
+
+    return clampNumber(requestedWidth, MIN_PREVIEW_STACK_WIDTH, Math.min(MAX_PREVIEW_STACK_WIDTH, maxByWidth, maxByHeight));
+  }
+
+  function clampPreviewStackPosition(position) {
+    const stage = stageRef.current;
+    const previewStack = previewStackRef.current;
+    const basePosition = {
+      x: clampNumber(position?.x ?? DEFAULT_PREVIEW_STACK_POSITION.x, 0, 100),
+      y: clampNumber(position?.y ?? DEFAULT_PREVIEW_STACK_POSITION.y, 0, 100),
+    };
+
+    if (!stage || !previewStack) return basePosition;
+
+    const stageRect = stage.getBoundingClientRect();
+    const stackRect = previewStack.getBoundingClientRect();
+
+    if (!stageRect.width || !stageRect.height || !stackRect.width || !stackRect.height) {
+      return basePosition;
+    }
+
+    const sideInset = 14;
+    const topInset = 72;
+    const bottomInset = 14;
+    const minX = ((stackRect.width / 2 + sideInset) / stageRect.width) * 100;
+    const maxX = ((stageRect.width - stackRect.width / 2 - sideInset) / stageRect.width) * 100;
+    const minY = ((stackRect.height / 2 + topInset) / stageRect.height) * 100;
+    const maxY = ((stageRect.height - stackRect.height / 2 - bottomInset) / stageRect.height) * 100;
+
+    return {
+      x: minX <= maxX ? clampNumber(basePosition.x, minX, maxX) : 50,
+      y: minY <= maxY ? clampNumber(basePosition.y, minY, maxY) : 50,
+    };
+  }
+
+  function startPreviewStackDrag(event) {
+    if (whiteBalancePickerActive || event.button !== 0) return;
+    if (event.target.closest('button, a, input, select, textarea')) return;
+
+    const stageRect = stageRef.current?.getBoundingClientRect();
+    if (!stageRect?.width || !stageRect?.height) return;
+
+    previewStackDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      startPosition: previewStackPosition,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    setIsDraggingPreviewStack(true);
+  }
+
+  function movePreviewStack(event) {
+    const dragState = previewStackDragRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId) return;
+
+    const stageRect = stageRef.current?.getBoundingClientRect();
+    if (!stageRect?.width || !stageRect?.height) return;
+
+    event.preventDefault();
+    const deltaX = ((event.clientX - dragState.startX) / stageRect.width) * 100;
+    const deltaY = ((event.clientY - dragState.startY) / stageRect.height) * 100;
+    setPreviewStackPosition(
+      clampPreviewStackPosition({
+        x: dragState.startPosition.x + deltaX,
+        y: dragState.startPosition.y + deltaY,
+      }),
+    );
+  }
+
+  function stopPreviewStackDrag(event) {
+    const dragState = previewStackDragRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId) return;
+
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    previewStackDragRef.current = null;
+    setIsDraggingPreviewStack(false);
+  }
+
+  function startPreviewStackResize(event) {
+    if (event.button !== 0 || whiteBalancePickerActive) return;
+
+    event.stopPropagation();
+    previewStackResizeRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      startWidth: previewStackWidth,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    setIsResizingPreviewStack(true);
+  }
+
+  function resizePreviewStack(event) {
+    const resizeState = previewStackResizeRef.current;
+    if (!resizeState || resizeState.pointerId !== event.pointerId) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    const deltaX = event.clientX - resizeState.startX;
+    const deltaY = event.clientY - resizeState.startY;
+    const nextWidth = clampPreviewStackWidth(resizeState.startWidth + deltaX + deltaY * 0.45);
+
+    setPreviewStackWidth(nextWidth);
+  }
+
+  function stopPreviewStackResize(event) {
+    const resizeState = previewStackResizeRef.current;
+    if (!resizeState || resizeState.pointerId !== event.pointerId) return;
+
+    event.stopPropagation();
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    previewStackResizeRef.current = null;
+    setIsResizingPreviewStack(false);
+    setPreviewStackPosition((currentPosition) => clampPreviewStackPosition(currentPosition));
+  }
+
+  function getStagePointPercent(event) {
+    const stageRect = stageRef.current?.getBoundingClientRect();
+    if (!stageRect?.width || !stageRect?.height) return null;
+
+    return {
+      x: clampNumber(((event.clientX - stageRect.left) / stageRect.width) * 100, 0, 100),
+      y: clampNumber(((event.clientY - stageRect.top) / stageRect.height) * 100, 0, 100),
+    };
+  }
+
+  function createTextBoxAtStagePoint(event) {
+    if (!textToolActive || currentView !== 'studio') return;
+
+    const point = getStagePointPercent(event);
+    if (!point) return;
+
+    event.preventDefault();
+    const id = crypto.randomUUID?.() || `text-${Date.now()}-${Math.random()}`;
+    const nextBox = {
+      id,
+      text: 'Texte',
+      x: point.x,
+      y: point.y,
+      width: DEFAULT_TEXT_BOX_WIDTH,
+      height: DEFAULT_TEXT_BOX_HEIGHT,
+      fontSize: DEFAULT_TEXT_BOX_FONT_SIZE,
+      minimized: false,
+    };
+
+    setTextBoxes((boxes) => [
+      ...boxes,
+      {
+        ...nextBox,
+        ...clampTextBoxPosition(nextBox),
+      },
+    ]);
+    setTextToolActive(false);
+    requestAnimationFrame(() => {
+      document.querySelector(`[data-text-box-editor="${id}"]`)?.focus();
+    });
+  }
+
+  function updateTextBox(id, updates) {
+    setTextBoxes((boxes) =>
+      boxes.map((box) => {
+        if (box.id !== id) return box;
+
+        const nextBox = {
+          ...box,
+          ...updates,
+          width: clampTextBoxWidth(updates.width ?? box.width),
+          height: clampTextBoxHeight(updates.height ?? box.height),
+          fontSize: clampTextBoxFontSize(updates.fontSize ?? box.fontSize),
+        };
+
+        return {
+          ...nextBox,
+          ...clampTextBoxPosition(nextBox),
+        };
+      }),
+    );
+  }
+
+  function clampTextBoxPosition(box, nextPosition = {}) {
+    const stageRect = stageRef.current?.getBoundingClientRect();
+    const basePosition = {
+      x: clampNumber(nextPosition.x ?? box.x, 0, 100),
+      y: clampNumber(nextPosition.y ?? box.y, 0, 100),
+    };
+
+    if (!stageRect?.width || !stageRect?.height) return basePosition;
+
+    const sideInset = 14;
+    const topInset = 72;
+    const bottomInset = 14;
+    const textBoxWidth = clampTextBoxWidth(box.width);
+    const estimatedTextBoxHeight = box.minimized ? 44 : clampTextBoxHeight(box.height);
+    const minX = ((textBoxWidth / 2 + sideInset) / stageRect.width) * 100;
+    const maxX = ((stageRect.width - textBoxWidth / 2 - sideInset) / stageRect.width) * 100;
+    const minY = (topInset / stageRect.height) * 100;
+    const maxY = ((stageRect.height - estimatedTextBoxHeight - bottomInset) / stageRect.height) * 100;
+
+    return {
+      x: minX <= maxX ? clampNumber(basePosition.x, minX, maxX) : 50,
+      y: minY <= maxY ? clampNumber(basePosition.y, minY, maxY) : 50,
+    };
+  }
+
+  function clampAllTextBoxes(boxes) {
+    return boxes.map((box) => ({
+      ...box,
+      width: clampTextBoxWidth(box.width),
+      height: clampTextBoxHeight(box.height),
+      fontSize: clampTextBoxFontSize(box.fontSize),
+      ...clampTextBoxPosition(box),
+    }));
+  }
+
+  function clampRenderedTextBoxes(boxes) {
+    const stageRect = stageRef.current?.getBoundingClientRect();
+    if (!stageRect?.width || !stageRect?.height) return clampAllTextBoxes(boxes);
+
+    return clampAllTextBoxes(boxes).map((box) => {
+      const textBoxElement = document.querySelector(`[data-text-box="${box.id}"]`);
+      if (!textBoxElement) return box;
+
+      const rect = textBoxElement.getBoundingClientRect();
+      const sideInset = 14;
+      const topInset = 72;
+      const bottomInset = 14;
+      const leftLimit = stageRect.left + sideInset;
+      const rightLimit = stageRect.right - sideInset;
+      const topLimit = stageRect.top + topInset;
+      const bottomLimit = stageRect.bottom - bottomInset;
+      let nextX = box.x;
+      let nextY = box.y;
+
+      if (rect.left < leftLimit) {
+        nextX += ((leftLimit - rect.left) / stageRect.width) * 100;
+      }
+
+      if (rect.right > rightLimit) {
+        nextX -= ((rect.right - rightLimit) / stageRect.width) * 100;
+      }
+
+      if (rect.top < topLimit) {
+        nextY += ((topLimit - rect.top) / stageRect.height) * 100;
+      }
+
+      if (rect.bottom > bottomLimit && rect.height < bottomLimit - topLimit) {
+        nextY -= ((rect.bottom - bottomLimit) / stageRect.height) * 100;
+      }
+
+      return {
+        ...box,
+        ...clampTextBoxPosition(box, { x: nextX, y: nextY }),
+      };
+    });
+  }
+
+  function haveTextBoxGeometriesChanged(currentBoxes, nextBoxes) {
+    if (currentBoxes.length !== nextBoxes.length) return true;
+
+    return currentBoxes.some((box, index) => {
+      const nextBox = nextBoxes[index];
+      return (
+        box.id !== nextBox.id ||
+        Math.abs(box.x - nextBox.x) > 0.001 ||
+        Math.abs(box.y - nextBox.y) > 0.001 ||
+        Math.abs(box.width - nextBox.width) > 0.001 ||
+        Math.abs((box.height || DEFAULT_TEXT_BOX_HEIGHT) - (nextBox.height || DEFAULT_TEXT_BOX_HEIGHT)) > 0.001 ||
+        Math.abs((box.fontSize || DEFAULT_TEXT_BOX_FONT_SIZE) - (nextBox.fontSize || DEFAULT_TEXT_BOX_FONT_SIZE)) > 0.001
+      );
+    });
+  }
+
+  function removeTextBox(id) {
+    setTextBoxes((boxes) => boxes.filter((box) => box.id !== id));
+  }
+
+  function startTextBoxDrag(event, box) {
+    if (event.button !== 0) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    textBoxDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      startPosition: { x: box.x, y: box.y },
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    setDraggingTextBoxId(box.id);
+  }
+
+  function moveTextBox(event, id) {
+    const dragState = textBoxDragRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId) return;
+
+    const stageRect = stageRef.current?.getBoundingClientRect();
+    if (!stageRect?.width || !stageRect?.height) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    const deltaX = ((event.clientX - dragState.startX) / stageRect.width) * 100;
+    const deltaY = ((event.clientY - dragState.startY) / stageRect.height) * 100;
+    setTextBoxes((boxes) =>
+      boxes.map((box) =>
+        box.id === id
+          ? {
+              ...box,
+              ...clampTextBoxPosition(box, {
+                x: dragState.startPosition.x + deltaX,
+                y: dragState.startPosition.y + deltaY,
+              }),
+            }
+          : box,
+      ),
+    );
+  }
+
+  function stopTextBoxDrag(event) {
+    const dragState = textBoxDragRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId) return;
+
+    event.stopPropagation();
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    textBoxDragRef.current = null;
+    setDraggingTextBoxId('');
+  }
+
+  function clampTextBoxWidth(width) {
+    const stageRect = stageRef.current?.getBoundingClientRect();
+    const maxByStage = stageRect?.width ? stageRect.width - 28 : MAX_TEXT_BOX_WIDTH;
+    return clampNumber(width, MIN_TEXT_BOX_WIDTH, Math.min(MAX_TEXT_BOX_WIDTH, maxByStage));
+  }
+
+  function clampTextBoxHeight(height) {
+    const stageRect = stageRef.current?.getBoundingClientRect();
+    const maxByStage = stageRect?.height ? stageRect.height - 86 : MAX_TEXT_BOX_HEIGHT;
+    return clampNumber(height || DEFAULT_TEXT_BOX_HEIGHT, MIN_TEXT_BOX_HEIGHT, Math.min(MAX_TEXT_BOX_HEIGHT, maxByStage));
+  }
+
+  function clampTextBoxFontSize(fontSize) {
+    return clampNumber(fontSize || DEFAULT_TEXT_BOX_FONT_SIZE, MIN_TEXT_BOX_FONT_SIZE, MAX_TEXT_BOX_FONT_SIZE);
+  }
+
+  function startTextBoxResize(event, box) {
+    if (event.button !== 0 || box.minimized) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    textBoxResizeRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      startWidth: box.width,
+      startHeight: box.height || DEFAULT_TEXT_BOX_HEIGHT,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    setResizingTextBoxId(box.id);
+  }
+
+  function resizeTextBox(event, id) {
+    const resizeState = textBoxResizeRef.current;
+    if (!resizeState || resizeState.pointerId !== event.pointerId) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    setTextBoxes((boxes) =>
+      boxes.map((box) => {
+        if (box.id !== id) return box;
+
+        const nextBox = {
+          ...box,
+          width: clampTextBoxWidth(resizeState.startWidth + event.clientX - resizeState.startX),
+          height: clampTextBoxHeight(resizeState.startHeight + event.clientY - resizeState.startY),
+        };
+
+        return {
+          ...nextBox,
+          ...clampTextBoxPosition(nextBox),
+        };
+      }),
+    );
+  }
+
+  function stopTextBoxResize(event) {
+    const resizeState = textBoxResizeRef.current;
+    if (!resizeState || resizeState.pointerId !== event.pointerId) return;
+
+    event.stopPropagation();
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    textBoxResizeRef.current = null;
+    setResizingTextBoxId('');
   }
 
   function stopAudio() {
@@ -1808,18 +2365,34 @@ export default function App() {
   }
 
   return (
-    <main className="app-shell">
+    <main
+      className={
+        currentView === 'studio'
+          ? sourcesOpen
+            ? 'app-shell studio-shell sources-open'
+            : 'app-shell studio-shell sources-closed'
+          : 'app-shell library-shell'
+      }
+    >
       <header className="topbar">
         <div className="brand">
-          <span className="brand-mark">
-            {currentView === 'library' ? <Library size={18} /> : <Video size={18} />}
-          </span>
           <div>
-            <p>ReTok Studio</p>
-            <h1>{currentView === 'library' ? 'Bibliothèque' : 'Enregistrer une take'}</h1>
+            <h1>ReTok Studio</h1>
+            {currentView === 'library' && <p>Bibliothèque</p>}
           </div>
         </div>
         <div className="topbar-actions">
+          {currentView === 'studio' && (
+            <button
+              className={textToolActive ? 'nav-button tool-button active' : 'nav-button tool-button'}
+              type="button"
+              aria-pressed={textToolActive}
+              onClick={() => setTextToolActive((active) => !active)}
+            >
+              <Type size={16} />
+              Texte
+            </button>
+          )}
           <button
             className="nav-button"
             type="button"
@@ -1840,9 +2413,7 @@ export default function App() {
       <section className={sourcesOpen ? 'workspace' : 'workspace sources-collapsed'}>
         <aside className={sourcesOpen ? 'setup-panel' : 'setup-panel collapsed'} aria-label="Sources">
           <div className="panel-title">
-            <span>
-              {sourcesOpen ? 'Sources' : <Camera size={17} />}
-            </span>
+            {sourcesOpen && <span>Sources</span>}
             <div className="panel-actions">
               {sourcesOpen && (
                 <button
@@ -1866,6 +2437,7 @@ export default function App() {
           </div>
 
           <div className="sources-panel-content" aria-hidden={!sourcesOpen}>
+          <div className="sources-scroll">
           <label className="source-field" htmlFor="camera-select">
             <span>
               <Camera size={17} />
@@ -1913,6 +2485,11 @@ export default function App() {
               ))}
             </div>
           </section>
+
+          <div className="quality-readout" aria-label="Qualité caméra active">
+            <span>Qualité</span>
+            <strong>{activeCameraSettings ? getCameraQualityLabel(activeCameraSettings) : 'Auto max'}</strong>
+          </div>
 
           <label className="source-field" htmlFor="audio-select">
             <span>
@@ -1966,6 +2543,71 @@ export default function App() {
               <small>{mirrorEnabled ? 'Actif' : 'Désactivé'}</small>
             </span>
           </button>
+
+          <section className="image-adjust-panel" aria-label="Image brute">
+            <div className="white-balance-head">
+              <span>Image brute</span>
+              <button
+                type="button"
+                disabled={!sourcesOpen}
+                onClick={() => {
+                  setRawSaturation(DEFAULT_RAW_SATURATION);
+                  setRawContrast(DEFAULT_RAW_CONTRAST);
+                  setRawBrightness(DEFAULT_RAW_BRIGHTNESS);
+                }}
+              >
+                Reset
+              </button>
+            </div>
+            <label className="white-balance-control" htmlFor="raw-saturation">
+              <span>
+                Saturation
+                <strong>{rawSaturation}%</strong>
+              </span>
+              <input
+                id="raw-saturation"
+                type="range"
+                min="0"
+                max="200"
+                step="1"
+                value={rawSaturation}
+                disabled={!sourcesOpen}
+                onChange={(event) => setRawSaturation(clampNumber(event.target.value, 0, 200))}
+              />
+            </label>
+            <label className="white-balance-control" htmlFor="raw-contrast">
+              <span>
+                Contraste
+                <strong>{rawContrast}%</strong>
+              </span>
+              <input
+                id="raw-contrast"
+                type="range"
+                min="50"
+                max="150"
+                step="1"
+                value={rawContrast}
+                disabled={!sourcesOpen}
+                onChange={(event) => setRawContrast(clampNumber(event.target.value, 50, 150))}
+              />
+            </label>
+            <label className="white-balance-control" htmlFor="raw-brightness">
+              <span>
+                Luminosité
+                <strong>{rawBrightness}%</strong>
+              </span>
+              <input
+                id="raw-brightness"
+                type="range"
+                min="50"
+                max="150"
+                step="1"
+                value={rawBrightness}
+                disabled={!sourcesOpen}
+                onChange={(event) => setRawBrightness(clampNumber(event.target.value, 50, 150))}
+              />
+            </label>
+          </section>
 
           <section className="white-balance-panel" aria-label="Balance des blancs">
             <div className="white-balance-head">
@@ -2024,6 +2666,7 @@ export default function App() {
               />
             </label>
           </section>
+          </div>
 
           <div className="source-summary">
             <p>
@@ -2043,46 +2686,179 @@ export default function App() {
           </div>
         </aside>
 
-        <section className="stage" aria-label="Aperçu et enregistrement">
-          <div className={whiteBalancePickerActive ? 'preview-wrap picking-white' : 'preview-wrap'}>
-            <video ref={previewRef} className="raw-preview" autoPlay playsInline muted />
-            <canvas
-              ref={canvasRef}
-              width={TIKTOK_WIDTH}
-              height={TIKTOK_HEIGHT}
-              aria-label="Aperçu TikTok 9:16"
-              onClick={applyAutoWhiteBalance}
+        <section
+          ref={stageRef}
+          className={textToolActive ? 'stage text-tool' : 'stage'}
+          aria-label="Aperçu et enregistrement"
+        >
+          {textToolActive && (
+            <button
+              className="text-placement-layer"
+              type="button"
+              aria-label="Placer un texte"
+              onClick={createTextBoxAtStagePoint}
             />
-            {whiteBalancePickerActive && <div className="picker-hint">Rush brut: clique une zone blanche</div>}
-            <div className="recording-head">
-              <span className={isRecording ? 'rec-pill active' : 'rec-pill'}>{isRecording ? 'REC' : 'READY'}</span>
-              <span>{formatTime(recordingSeconds)}</span>
+          )}
+
+          <div
+            ref={previewStackRef}
+            className={[
+              'preview-stack',
+              isDraggingPreviewStack ? 'dragging' : '',
+              isResizingPreviewStack ? 'resizing' : '',
+            ]
+              .filter(Boolean)
+              .join(' ')}
+            style={{
+              left: `${previewStackPosition.x}%`,
+              top: `${previewStackPosition.y}%`,
+              width: `${previewStackWidth}px`,
+            }}
+            onPointerDown={startPreviewStackDrag}
+            onPointerMove={movePreviewStack}
+            onPointerUp={stopPreviewStackDrag}
+            onPointerCancel={stopPreviewStackDrag}
+          >
+            <div className={whiteBalancePickerActive ? 'preview-wrap picking-white' : 'preview-wrap'}>
+              <video ref={previewRef} className="raw-preview" autoPlay playsInline muted />
+              <canvas
+                ref={canvasRef}
+                width={TIKTOK_WIDTH}
+                height={TIKTOK_HEIGHT}
+                aria-label="Aperçu TikTok 9:16"
+                onClick={applyAutoWhiteBalance}
+              />
+              {whiteBalancePickerActive && <div className="picker-hint">Rush brut: clique une zone blanche</div>}
+              <div className="recording-head">
+                <span className={isRecording ? 'rec-pill active' : 'rec-pill'}>{isRecording ? 'REC' : 'READY'}</span>
+                <span>{formatTime(recordingSeconds)}</span>
+              </div>
+              <button
+                className="preview-resize-handle"
+                type="button"
+                aria-label="Redimensionner le retour image"
+                onPointerDown={startPreviewStackResize}
+                onPointerMove={resizePreviewStack}
+                onPointerUp={stopPreviewStackResize}
+                onPointerCancel={stopPreviewStackResize}
+              />
+            </div>
+
+            <div className="transport">
+              {!isRecording ? (
+                <button className="record-button" type="button" onClick={startRecording} disabled={!isReady}>
+                  <Video size={20} />
+                  Enregistrer
+                </button>
+              ) : (
+                <button className="stop-button" type="button" onClick={stopRecording}>
+                  <CircleStop size={20} />
+                  Stop
+                </button>
+              )}
+              {recordingUrl && (
+                <a
+                  className="download-button"
+                  href={recordingUrl}
+                  download={`retok-take-${Date.now()}.${recordingFormatRef.current.extension}`}
+                >
+                  <Download size={18} />
+                  Télécharger
+                </a>
+              )}
             </div>
           </div>
 
-          <div className="transport">
-            {!isRecording ? (
-              <button className="record-button" type="button" onClick={startRecording} disabled={!isReady}>
-                <Video size={20} />
-                Enregistrer
-              </button>
-            ) : (
-              <button className="stop-button" type="button" onClick={stopRecording}>
-                <CircleStop size={20} />
-                Stop
-              </button>
-            )}
-            {recordingUrl && (
-              <a
-                className="download-button"
-                href={recordingUrl}
-                download={`retok-take-${Date.now()}.${recordingFormatRef.current.extension}`}
+          {textBoxes.map((box) => (
+            <div
+              key={box.id}
+              data-text-box={box.id}
+              className={[
+                'text-box',
+                draggingTextBoxId === box.id ? 'dragging' : '',
+                resizingTextBoxId === box.id ? 'resizing' : '',
+                box.minimized ? 'minimized' : '',
+              ]
+                .filter(Boolean)
+                .join(' ')}
+              style={{
+                left: `${box.x}%`,
+                top: `${box.y}%`,
+                width: `${box.width}px`,
+                height: box.minimized ? undefined : `${clampTextBoxHeight(box.height)}px`,
+                maxHeight: `calc(100% - ${box.y}% - 14px)`,
+                '--text-box-font-size': `${clampTextBoxFontSize(box.fontSize)}px`,
+              }}
+              onPointerDown={(event) => event.stopPropagation()}
+            >
+              <div className="text-box-toolbar">
+                <button
+                  className="text-box-drag"
+                  type="button"
+                  aria-label="Déplacer le texte"
+                  onPointerDown={(event) => startTextBoxDrag(event, box)}
+                  onPointerMove={(event) => moveTextBox(event, box.id)}
+                  onPointerUp={stopTextBoxDrag}
+                  onPointerCancel={stopTextBoxDrag}
+                >
+                  <span />
+                </button>
+                <label className="text-box-size-control">
+                  <span>Taille</span>
+                  <select
+                    value={clampTextBoxFontSize(box.fontSize)}
+                    aria-label="Taille du texte"
+                    onChange={(event) => updateTextBox(box.id, { fontSize: Number(event.target.value) })}
+                  >
+                    {TEXT_BOX_FONT_SIZES.map((size) => (
+                      <option key={size} value={size}>
+                        {size}px
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="text-box-actions">
+                  <button
+                    className="text-box-minimize"
+                    type="button"
+                    aria-label={box.minimized ? 'Restaurer le texte' : 'Réduire le texte'}
+                    onClick={() => updateTextBox(box.id, { minimized: !box.minimized })}
+                  >
+                    {box.minimized ? <Maximize2 size={13} /> : <Minimize2 size={13} />}
+                  </button>
+                  <button
+                    className="text-box-delete"
+                    type="button"
+                    aria-label="Supprimer le texte"
+                    onClick={() => removeTextBox(box.id)}
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              </div>
+              {box.minimized && <div className="text-box-min-preview">{box.text || 'Texte'}</div>}
+              <div
+                className="text-box-editor"
+                contentEditable
+                suppressContentEditableWarning
+                data-text-box-editor={box.id}
+                onInput={(event) => updateTextBox(box.id, { text: event.currentTarget.textContent || '' })}
               >
-                <Download size={18} />
-                Télécharger
-              </a>
-            )}
-          </div>
+                {box.text}
+              </div>
+              {!box.minimized && (
+                <button
+                  className="text-box-resize"
+                  type="button"
+                  aria-label="Redimensionner le texte"
+                  onPointerDown={(event) => startTextBoxResize(event, box)}
+                  onPointerMove={(event) => resizeTextBox(event, box.id)}
+                  onPointerUp={stopTextBoxResize}
+                  onPointerCancel={stopTextBoxResize}
+                />
+              )}
+            </div>
+          ))}
 
           {error && <p className="error-message">{error}</p>}
         </section>
