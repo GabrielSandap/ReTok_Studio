@@ -34,6 +34,43 @@ const RETRO_GLOW_ALPHA = 0.2;
 const WIDE_CAMERA_STORAGE_KEY = 'retok-wide-camera-id';
 const WIDE_CAMERA_MANUAL_KEY = 'retok-wide-camera-manual';
 
+const CAMERA_TEST_MODES = [
+  {
+    key: 'natural',
+    label: 'auto',
+    constraints: {
+      aspectRatio: { ideal: CAMERA_ASPECT_RATIO },
+      resizeMode: { ideal: 'none' },
+      frameRate: { ideal: 30, max: 60 },
+    },
+    forceResolution: false,
+  },
+  {
+    key: 'hd',
+    label: '720p wide',
+    constraints: {
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+      aspectRatio: { ideal: CAMERA_ASPECT_RATIO },
+      resizeMode: { ideal: 'none' },
+      frameRate: { ideal: 30, max: 60 },
+    },
+    forceResolution: false,
+  },
+  {
+    key: 'fullhd',
+    label: '1080p',
+    constraints: {
+      width: { ideal: 1920 },
+      height: { ideal: 1080 },
+      aspectRatio: { ideal: CAMERA_ASPECT_RATIO },
+      resizeMode: { ideal: 'none' },
+      frameRate: { ideal: 30, max: 60 },
+    },
+    forceResolution: true,
+  },
+];
+
 let skinSmoothingBuffers;
 let halationBuffers;
 let retroGlowBuffers;
@@ -68,14 +105,16 @@ function makeAudioConstraints(deviceId) {
   };
 }
 
-function makeCameraConstraints(deviceId) {
+function getCameraTestMode(modeKey = 'natural') {
+  return CAMERA_TEST_MODES.find((mode) => mode.key === modeKey) || CAMERA_TEST_MODES[0];
+}
+
+function makeCameraConstraints(deviceId, modeKey = 'natural') {
+  const mode = getCameraTestMode(modeKey);
+
   return {
     deviceId: deviceId ? { exact: deviceId } : undefined,
-    width: { ideal: 1920 },
-    height: { ideal: 1080 },
-    aspectRatio: { ideal: CAMERA_ASPECT_RATIO },
-    resizeMode: { ideal: 'none' },
-    frameRate: { ideal: 30, max: 60 },
+    ...mode.constraints,
   };
 }
 
@@ -84,18 +123,17 @@ function getCapabilityMin(capability) {
   return Number.isFinite(capability.min) ? capability.min : null;
 }
 
-async function getWideCameraStream(deviceId) {
+async function getWideCameraStream(deviceId, modeKey = 'natural') {
   try {
     return await navigator.mediaDevices.getUserMedia({
-      video: makeCameraConstraints(deviceId),
+      video: makeCameraConstraints(deviceId, modeKey),
       audio: false,
     });
   } catch (wideError) {
     return navigator.mediaDevices.getUserMedia({
       video: {
         deviceId: deviceId ? { exact: deviceId } : undefined,
-        width: { ideal: 1920 },
-        height: { ideal: 1080 },
+        ...getCameraTestMode(modeKey).constraints,
         aspectRatio: { ideal: CAMERA_ASPECT_RATIO },
         frameRate: { ideal: 30, max: 60 },
       },
@@ -131,18 +169,29 @@ function getWideLabelScore(label) {
   return score;
 }
 
-function scoreCameraProfile(label, settings, capabilities) {
+function scoreCameraProfile(label, settings, capabilities, modeKey = 'natural') {
   const width = Number(settings?.width) || 0;
   const height = Number(settings?.height) || 0;
   const ratio = width && height ? width / height : 0;
+  const normalizedLabel = label.toLowerCase();
   const ratioDistance = ratio ? Math.abs(ratio - CAMERA_ASPECT_RATIO) / CAMERA_ASPECT_RATIO : 1;
   const ratioScore = Math.max(0, 34 - ratioDistance * 34);
   const resolutionScore = Math.min(28, ((width * height) / (1920 * 1080)) * 28);
   const fullHdBonus = width >= 1900 && height >= 1000 ? 22 : 0;
   const zoomMin = getCapabilityMin(capabilities?.zoom);
   const zoomBonus = zoomMin !== null ? 14 : 0;
+  const modeBonus = modeKey === 'natural' ? 24 : modeKey === 'hd' ? 16 : 0;
+  const faceTimeFullHdCropPenalty = /facetime/.test(normalizedLabel) && modeKey === 'fullhd' ? 42 : 0;
 
-  return Math.round(ratioScore + resolutionScore + fullHdBonus + zoomBonus + getWideLabelScore(label));
+  return Math.round(
+    ratioScore +
+      resolutionScore +
+      fullHdBonus +
+      zoomBonus +
+      modeBonus +
+      getWideLabelScore(label) -
+      faceTimeFullHdCropPenalty,
+  );
 }
 
 function getBestCameraProfile(profiles) {
@@ -157,7 +206,9 @@ function pickBestWideCamera(profiles, storedSelection) {
     ? profiles.find((profile) => profile.available && profile.deviceId === storedSelection.deviceId)
     : null;
 
-  return storedProfile?.deviceId || bestProfile?.deviceId || profiles.find((profile) => profile.available)?.deviceId || '';
+  if (storedProfile && (!bestProfile || storedProfile.score >= bestProfile.score - 8)) return storedProfile.deviceId;
+
+  return bestProfile?.deviceId || profiles.find((profile) => profile.available)?.deviceId || '';
 }
 
 function formatCameraOption(device, index, profile, recommendedCameraId) {
@@ -168,6 +219,7 @@ function formatCameraOption(device, index, profile, recommendedCameraId) {
 
   if (device.deviceId === recommendedCameraId) details.push('plan large');
   if (width && height) details.push(`${width}x${height}`);
+  if (profile?.modeLabel) details.push(profile.modeLabel);
   if (profile && !profile.available) details.push('test indisponible');
 
   return details.length ? `${label} · ${details.join(' · ')}` : label;
@@ -178,34 +230,59 @@ async function scanCameraProfiles(cameraDevices) {
 
   for (const [index, device] of cameraDevices.entries()) {
     const fallbackLabel = device.label || `Caméra ${index + 1}`;
-    let stream;
+    const testedProfiles = [];
 
-    try {
-      stream = await getWideCameraStream(device.deviceId);
-      const [track] = stream.getVideoTracks();
-      const settings = await applyWideCameraTrackSettings(stream);
-      const capabilities = track?.getCapabilities?.() || {};
-      const label = device.label || track?.label || fallbackLabel;
+    for (const mode of CAMERA_TEST_MODES) {
+      let stream;
 
-      profiles.push({
-        deviceId: device.deviceId,
-        label,
-        settings,
-        capabilities,
-        score: scoreCameraProfile(label, settings, capabilities),
-        available: true,
-      });
-    } catch (scanError) {
+      try {
+        stream = await getWideCameraStream(device.deviceId, mode.key);
+        const [track] = stream.getVideoTracks();
+        const settings = await applyWideCameraTrackSettings(stream, { forceResolution: mode.forceResolution });
+        const capabilities = track?.getCapabilities?.() || {};
+        const label = device.label || track?.label || fallbackLabel;
+
+        testedProfiles.push({
+          deviceId: device.deviceId,
+          label,
+          settings,
+          capabilities,
+          modeKey: mode.key,
+          modeLabel: mode.label,
+          score: scoreCameraProfile(label, settings, capabilities, mode.key),
+          available: true,
+        });
+      } catch (scanError) {
+        testedProfiles.push({
+          deviceId: device.deviceId,
+          label: fallbackLabel,
+          settings: {},
+          capabilities: {},
+          modeKey: mode.key,
+          modeLabel: mode.label,
+          score: getWideLabelScore(fallbackLabel) - 80,
+          available: false,
+        });
+      } finally {
+        stream?.getTracks().forEach((track) => track.stop());
+      }
+    }
+
+    const bestTestedProfile = getBestCameraProfile(testedProfiles);
+
+    if (bestTestedProfile) {
+      profiles.push(bestTestedProfile);
+    } else {
       profiles.push({
         deviceId: device.deviceId,
         label: fallbackLabel,
         settings: {},
         capabilities: {},
+        modeKey: 'natural',
+        modeLabel: 'auto',
         score: getWideLabelScore(fallbackLabel) - 80,
         available: false,
       });
-    } finally {
-      stream?.getTracks().forEach((track) => track.stop());
     }
   }
 
@@ -524,7 +601,7 @@ function drawVideoFrame(context, video, coverRect, mirrored) {
   context.restore();
 }
 
-async function applyWideCameraTrackSettings(stream) {
+async function applyWideCameraTrackSettings(stream, { forceResolution = true } = {}) {
   const [track] = stream.getVideoTracks();
   if (!track?.applyConstraints) return track?.getSettings?.() || {};
 
@@ -536,17 +613,19 @@ async function applyWideCameraTrackSettings(stream) {
   if (capabilities.focusMode?.includes?.('continuous')) advanced.focusMode = 'continuous';
   if (capabilities.exposureMode?.includes?.('continuous')) advanced.exposureMode = 'continuous';
 
-  const constraints = {
-    width: { ideal: 1920 },
-    height: { ideal: 1080 },
-    aspectRatio: { ideal: CAMERA_ASPECT_RATIO },
-    resizeMode: { ideal: 'none' },
-  };
+  const constraints = forceResolution
+    ? {
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+        aspectRatio: { ideal: CAMERA_ASPECT_RATIO },
+        resizeMode: { ideal: 'none' },
+      }
+    : {};
 
   if (Object.keys(advanced).length) constraints.advanced = [advanced];
 
   try {
-    await track.applyConstraints(constraints);
+    if (Object.keys(constraints).length) await track.applyConstraints(constraints);
   } catch (settingsError) {
     // Some webcams expose capabilities they cannot actually apply. Keep the stream instead of failing camera startup.
   }
@@ -1147,7 +1226,7 @@ export default function App() {
         saveWideCameraSelection(nextCameraId, storedSelection.manual && nextCameraId === storedSelection.deviceId);
         setStatus(
           nextProfile?.settings?.width && nextProfile?.settings?.height
-            ? `Plan large sélectionné · ${nextProfile.settings.width}x${nextProfile.settings.height}`
+            ? `Plan large sélectionné · ${nextProfile.settings.width}x${nextProfile.settings.height} · ${nextProfile.modeLabel}`
             : 'Plan large sélectionné',
         );
       } else {
@@ -1181,8 +1260,12 @@ export default function App() {
     setStatus('Activation caméra');
 
     try {
-      const stream = await getWideCameraStream(deviceId);
-      const cameraSettings = await applyWideCameraTrackSettings(stream);
+      const selectedProfile = cameraProfileById.get(deviceId);
+      const selectedMode = getCameraTestMode(selectedProfile?.modeKey);
+      const stream = await getWideCameraStream(deviceId, selectedMode.key);
+      const cameraSettings = await applyWideCameraTrackSettings(stream, {
+        forceResolution: selectedMode.forceResolution,
+      });
 
       cameraStreamRef.current = stream;
       activeCameraIdRef.current = cameraSettings.deviceId || deviceId;
@@ -1194,7 +1277,7 @@ export default function App() {
       setCameraReady(true);
       setStatus(
         cameraSettings.width && cameraSettings.height
-          ? `Prêt à enregistrer · ${cameraSettings.width}x${cameraSettings.height}`
+          ? `Prêt à enregistrer · ${cameraSettings.width}x${cameraSettings.height} · ${selectedMode.label}`
           : 'Prêt à enregistrer',
       );
       setCameraProfiles((profiles) =>
@@ -1203,7 +1286,9 @@ export default function App() {
             ? {
                 ...profile,
                 settings: cameraSettings,
-                score: scoreCameraProfile(profile.label, cameraSettings, profile.capabilities),
+                modeKey: selectedMode.key,
+                modeLabel: selectedMode.label,
+                score: scoreCameraProfile(profile.label, cameraSettings, profile.capabilities, selectedMode.key),
                 available: true,
               }
             : profile,
