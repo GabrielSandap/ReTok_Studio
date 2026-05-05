@@ -1639,8 +1639,7 @@ export default function App() {
         <aside className={sourcesOpen ? 'setup-panel' : 'setup-panel collapsed'} aria-label="Sources">
           <div className="panel-title">
             <span>
-              {!sourcesOpen && <Camera size={17} />}
-              Sources
+              {sourcesOpen ? 'Sources' : <Camera size={17} />}
             </span>
             <div className="panel-actions">
               {sourcesOpen && (

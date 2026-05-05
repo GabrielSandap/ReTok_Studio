@@ -195,6 +195,7 @@ button {
 }
 
 .setup-panel.collapsed {
+  align-items: start;
   justify-items: center;
   padding: 10px 0;
 }
@@ -415,10 +416,12 @@ button {
 }
 
 .setup-panel.collapsed .panel-title {
+  display: grid;
   width: 100%;
-  flex-direction: column;
+  grid-template-columns: 1fr;
+  justify-items: center;
   align-items: center;
-  justify-content: flex-start;
+  align-content: start;
   padding-bottom: 0;
 }
 
@@ -426,6 +429,8 @@ button {
   display: grid;
   width: 36px;
   height: 36px;
+  justify-self: center;
+  margin-inline: auto;
   place-items: center;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -435,7 +440,16 @@ button {
 }
 
 .setup-panel.collapsed .panel-actions {
+  display: grid;
+  width: 36px;
+  justify-self: center;
   flex-direction: column;
+  justify-items: center;
+  margin-inline: auto;
+}
+
+.setup-panel.collapsed .panel-title button {
+  margin-inline: auto;
 }
 
 .panel-title strong {
