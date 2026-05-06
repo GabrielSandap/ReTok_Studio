@@ -9,11 +9,12 @@ import {
   Crosshair,
   FlipHorizontal,
   Focus,
+  Heading1,
+  Heading2,
   Library,
   Download,
-  Maximize2,
   Mic2,
-  Minimize2,
+  Pilcrow,
   Pencil,
   Play,
   RefreshCw,
@@ -41,23 +42,38 @@ const DENOISE_SCALE = 0.42;
 const WIDE_CAMERA_STORAGE_KEY = 'retok-wide-camera-id';
 const WIDE_CAMERA_MANUAL_KEY = 'retok-wide-camera-manual';
 const DEFAULT_FOCAL_MODE_KEY = 'wide';
-const PREVIEW_STACK_POSITION_STORAGE_KEY = 'retok-preview-stack-position';
-const PREVIEW_STACK_WIDTH_STORAGE_KEY = 'retok-preview-stack-width';
-const TEXT_BOXES_STORAGE_KEY = 'retok-text-boxes';
-const DEFAULT_PREVIEW_STACK_POSITION = { x: 50, y: 54 };
-const DEFAULT_PREVIEW_STACK_WIDTH = 430;
-const MIN_PREVIEW_STACK_WIDTH = 220;
-const MAX_PREVIEW_STACK_WIDTH = 760;
-const DEFAULT_TEXT_BOX_WIDTH = 760;
-const MIN_TEXT_BOX_WIDTH = 240;
-const MAX_TEXT_BOX_WIDTH = 1280;
-const DEFAULT_TEXT_BOX_HEIGHT = 220;
-const MIN_TEXT_BOX_HEIGHT = 92;
-const MAX_TEXT_BOX_HEIGHT = 860;
-const DEFAULT_TEXT_BOX_FONT_SIZE = 20;
-const MIN_TEXT_BOX_FONT_SIZE = 14;
-const MAX_TEXT_BOX_FONT_SIZE = 40;
-const TEXT_BOX_FONT_SIZES = [14, 16, 18, 20, 24, 28, 32, 36, 40];
+const REMOVED_STUDIO_STORAGE_KEYS = ['retok-preview-stack-position', 'retok-text-boxes', 'retok-preview-stack-width'];
+const PREVIEW_STACK_WIDTH_STORAGE_KEY = 'retok-preview-stack-width-v2';
+const STUDIO_NOTES_STORAGE_KEY = 'retok-studio-notes';
+const DEFAULT_PREVIEW_STACK_WIDTH = 220;
+const MIN_PREVIEW_STACK_WIDTH = 180;
+const MAX_PREVIEW_STACK_WIDTH = 520;
+const NOTE_TEXT_SIZES = [16, 18, 22, 26, 32, 40, 52];
+
+function getLocalhostOrigin() {
+  if (typeof window === 'undefined') return 'http://localhost:5173';
+
+  const port = window.location.port ? `:${window.location.port}` : '';
+  return `${window.location.protocol}//localhost${port}`;
+}
+
+function getMediaAccessIssue() {
+  if (typeof navigator !== 'undefined' && navigator.mediaDevices?.enumerateDevices && navigator.mediaDevices?.getUserMedia) {
+    return null;
+  }
+
+  if (typeof window !== 'undefined' && window.isSecureContext === false) {
+    return {
+      status: 'HTTPS ou localhost requis',
+      message: `Chrome bloque caméra et micro sur ${window.location.origin}. Ouvre ${getLocalhostOrigin()} sur cette machine, ou lance l'app en HTTPS pour un appareil du réseau.`,
+    };
+  }
+
+  return {
+    status: 'Navigateur incompatible',
+    message: "Ce navigateur ne donne pas accès aux caméras et sources audio.",
+  };
+}
 
 const FOCAL_MODES = [
   { key: 'wide', label: '0.5x', summary: 'Grand angle', targetZoom: 'min', digitalScale: 1, profileMode: 'wide' },
@@ -251,52 +267,27 @@ function saveWideCameraSelection(deviceId, manual) {
   localStorage.setItem(WIDE_CAMERA_MANUAL_KEY, String(manual));
 }
 
-function readStoredPreviewStackPosition() {
-  if (typeof localStorage === 'undefined') return DEFAULT_PREVIEW_STACK_POSITION;
-
-  try {
-    const storedPosition = JSON.parse(localStorage.getItem(PREVIEW_STACK_POSITION_STORAGE_KEY) || '{}');
-    return {
-      x: clampNumber(storedPosition.x || DEFAULT_PREVIEW_STACK_POSITION.x, 0, 100),
-      y: clampNumber(storedPosition.y || DEFAULT_PREVIEW_STACK_POSITION.y, 0, 100),
-    };
-  } catch {
-    return DEFAULT_PREVIEW_STACK_POSITION;
-  }
-}
-
 function readStoredPreviewStackWidth() {
   if (typeof localStorage === 'undefined') return DEFAULT_PREVIEW_STACK_WIDTH;
   return clampNumber(localStorage.getItem(PREVIEW_STACK_WIDTH_STORAGE_KEY) || DEFAULT_PREVIEW_STACK_WIDTH, MIN_PREVIEW_STACK_WIDTH, MAX_PREVIEW_STACK_WIDTH);
 }
 
-function readStoredTextBoxes() {
-  if (typeof localStorage === 'undefined') return [];
+function readStoredStudioNotes() {
+  if (typeof localStorage === 'undefined') return '';
+  return localStorage.getItem(STUDIO_NOTES_STORAGE_KEY) || '';
+}
 
-  try {
-    const storedTextBoxes = JSON.parse(localStorage.getItem(TEXT_BOXES_STORAGE_KEY) || '[]');
-    if (!Array.isArray(storedTextBoxes)) return [];
+function replaceFontTagsWithSpans(root, fontSize) {
+  root.querySelectorAll('font[size="7"]').forEach((fontElement) => {
+    const span = document.createElement('span');
+    span.style.fontSize = `${fontSize}px`;
+    while (fontElement.firstChild) span.appendChild(fontElement.firstChild);
+    fontElement.replaceWith(span);
+  });
+}
 
-    return storedTextBoxes
-      .filter((box) => box && typeof box.id === 'string')
-      .map((box) => {
-        const storedWidth = Number(box.width) || DEFAULT_TEXT_BOX_WIDTH;
-        const migratedWidth = storedWidth < DEFAULT_TEXT_BOX_WIDTH ? DEFAULT_TEXT_BOX_WIDTH : storedWidth;
-
-        return {
-          id: box.id,
-          text: typeof box.text === 'string' ? box.text : 'Texte',
-          x: clampNumber(box.x ?? 50, 0, 100),
-          y: clampNumber(box.y ?? 50, 0, 100),
-          width: clampNumber(migratedWidth, MIN_TEXT_BOX_WIDTH, MAX_TEXT_BOX_WIDTH),
-          height: clampNumber(box.height || DEFAULT_TEXT_BOX_HEIGHT, MIN_TEXT_BOX_HEIGHT, MAX_TEXT_BOX_HEIGHT),
-          fontSize: clampNumber(box.fontSize || DEFAULT_TEXT_BOX_FONT_SIZE, MIN_TEXT_BOX_FONT_SIZE, MAX_TEXT_BOX_FONT_SIZE),
-          minimized: Boolean(box.minimized),
-        };
-      });
-  } catch {
-    return [];
-  }
+function sanitizePastedNotesText(text) {
+  return text.replace(/\r\n?/g, '\n');
 }
 
 function getWideLabelScore(label) {
@@ -1157,7 +1148,9 @@ export default function App() {
   const previewRef = useRef(null);
   const canvasRef = useRef(null);
   const stageRef = useRef(null);
-  const previewStackRef = useRef(null);
+  const notesEditorRef = useRef(null);
+  const notesSelectionRef = useRef(null);
+  const studioNotesRef = useRef(readStoredStudioNotes());
   const cameraStreamRef = useRef(null);
   const audioStreamRef = useRef(null);
   const monitorStreamRef = useRef(null);
@@ -1173,12 +1166,7 @@ export default function App() {
   const meterFrameRef = useRef(null);
   const activeCameraIdRef = useRef('');
   const cameraScanRunRef = useRef(0);
-  const previewStackDragRef = useRef(null);
   const previewStackResizeRef = useRef(null);
-  const textBoxDragRef = useRef(null);
-  const textBoxResizeRef = useRef(null);
-  const textBoxClampFrameRef = useRef(null);
-  const textBoxStorageTimeoutRef = useRef(null);
   const focalModeRef = useRef(DEFAULT_FOCAL_MODE_KEY);
   const focalDigitalScaleRef = useRef(getFocalMode(DEFAULT_FOCAL_MODE_KEY).digitalScale);
 
@@ -1206,14 +1194,10 @@ export default function App() {
   const [currentView, setCurrentView] = useState('studio');
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [whiteBalancePickerActive, setWhiteBalancePickerActive] = useState(false);
-  const [previewStackPosition, setPreviewStackPosition] = useState(readStoredPreviewStackPosition);
   const [previewStackWidth, setPreviewStackWidth] = useState(readStoredPreviewStackWidth);
-  const [isDraggingPreviewStack, setIsDraggingPreviewStack] = useState(false);
+  const [previewStackSide, setPreviewStackSide] = useState('right');
   const [isResizingPreviewStack, setIsResizingPreviewStack] = useState(false);
-  const [textToolActive, setTextToolActive] = useState(false);
-  const [textBoxes, setTextBoxes] = useState(readStoredTextBoxes);
-  const [draggingTextBoxId, setDraggingTextBoxId] = useState('');
-  const [resizingTextBoxId, setResizingTextBoxId] = useState('');
+  const [noteFontSize, setNoteFontSize] = useState(28);
   const [mirrorEnabled, setMirrorEnabled] = useState(() => localStorage.getItem('retok-mirror-enabled') !== 'false');
   const [whiteBalanceKelvin, setWhiteBalanceKelvin] = useState(() =>
     clampNumber(localStorage.getItem('retok-white-balance-kelvin') || DEFAULT_WHITE_BALANCE_KELVIN, 2800, 8000),
@@ -1276,15 +1260,6 @@ export default function App() {
   const selectedClip = useMemo(
     () => libraryItems.find((item) => item.id === selectedClipId) || libraryItems[0] || null,
     [libraryItems, selectedClipId],
-  );
-  const textBoxGeometryKey = useMemo(
-    () =>
-      textBoxes
-        .map((box) =>
-          [box.id, box.x.toFixed(3), box.y.toFixed(3), box.width, box.height, box.fontSize, box.minimized ? 1 : 0].join(':'),
-        )
-        .join('|'),
-    [textBoxes],
   );
   const mp4Supported = useMemo(() => isMp4RecordingSupported(), []);
 
@@ -1353,6 +1328,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    REMOVED_STUDIO_STORAGE_KEYS.forEach((key) => localStorage.removeItem(key));
+  }, []);
+
+  useEffect(() => {
     whiteBalanceRef.current = {
       kelvin: whiteBalanceKelvin,
       tint: whiteBalanceTint,
@@ -1360,10 +1339,6 @@ export default function App() {
     localStorage.setItem('retok-white-balance-kelvin', String(whiteBalanceKelvin));
     localStorage.setItem('retok-white-balance-tint', String(whiteBalanceTint));
   }, [whiteBalanceKelvin, whiteBalanceTint]);
-
-  useEffect(() => {
-    whiteBalancePickerActiveRef.current = whiteBalancePickerActive;
-  }, [whiteBalancePickerActive]);
 
   useEffect(() => {
     rawImageRef.current = {
@@ -1382,49 +1357,16 @@ export default function App() {
   }, [mirrorEnabled]);
 
   useEffect(() => {
-    localStorage.setItem(PREVIEW_STACK_POSITION_STORAGE_KEY, JSON.stringify(previewStackPosition));
-  }, [previewStackPosition]);
+    whiteBalancePickerActiveRef.current = whiteBalancePickerActive;
+  }, [whiteBalancePickerActive]);
 
   useEffect(() => {
     localStorage.setItem(PREVIEW_STACK_WIDTH_STORAGE_KEY, String(previewStackWidth));
-    const frameId = requestAnimationFrame(() => {
-      setPreviewStackPosition((currentPosition) => clampPreviewStackPosition(currentPosition));
-    });
-
-    return () => cancelAnimationFrame(frameId);
   }, [previewStackWidth]);
-
-  useEffect(() => {
-    if (textBoxStorageTimeoutRef.current) clearTimeout(textBoxStorageTimeoutRef.current);
-
-    textBoxStorageTimeoutRef.current = window.setTimeout(() => {
-      localStorage.setItem(TEXT_BOXES_STORAGE_KEY, JSON.stringify(textBoxes));
-    }, 180);
-
-    return () => clearTimeout(textBoxStorageTimeoutRef.current);
-  }, [textBoxes]);
-
-  useEffect(() => {
-    if (textBoxClampFrameRef.current) cancelAnimationFrame(textBoxClampFrameRef.current);
-
-    textBoxClampFrameRef.current = requestAnimationFrame(() => {
-      setTextBoxes((boxes) => {
-        const clampedBoxes = clampRenderedTextBoxes(boxes);
-        return haveTextBoxGeometriesChanged(boxes, clampedBoxes) ? clampedBoxes : boxes;
-      });
-      textBoxClampFrameRef.current = null;
-    });
-
-    return () => {
-      if (textBoxClampFrameRef.current) cancelAnimationFrame(textBoxClampFrameRef.current);
-    };
-  }, [textBoxGeometryKey, currentView, sourcesOpen]);
 
   useEffect(() => {
     const handleResize = () => {
       setPreviewStackWidth((currentWidth) => clampPreviewStackWidth(currentWidth));
-      setPreviewStackPosition((currentPosition) => clampPreviewStackPosition(currentPosition));
-      setTextBoxes((boxes) => clampAllTextBoxes(boxes));
     };
 
     window.addEventListener('resize', handleResize);
@@ -1434,8 +1376,6 @@ export default function App() {
   useEffect(() => {
     const frameId = requestAnimationFrame(() => {
       setPreviewStackWidth((currentWidth) => clampPreviewStackWidth(currentWidth));
-      setPreviewStackPosition((currentPosition) => clampPreviewStackPosition(currentPosition));
-      setTextBoxes((boxes) => clampAllTextBoxes(boxes));
     });
 
     return () => cancelAnimationFrame(frameId);
@@ -1514,9 +1454,10 @@ export default function App() {
     setIsScanningCameras(true);
     setCameraReady(false);
 
-    if (!navigator.mediaDevices?.enumerateDevices) {
-      setStatus('Navigateur incompatible');
-      setError("Ce navigateur ne donne pas accès aux caméras et sources audio.");
+    const mediaAccessIssue = getMediaAccessIssue();
+    if (mediaAccessIssue) {
+      setStatus(mediaAccessIssue.status);
+      setError(mediaAccessIssue.message);
       setIsScanningCameras(false);
       return;
     }
@@ -1788,81 +1729,6 @@ export default function App() {
     return clampNumber(requestedWidth, MIN_PREVIEW_STACK_WIDTH, Math.min(MAX_PREVIEW_STACK_WIDTH, maxByWidth, maxByHeight));
   }
 
-  function clampPreviewStackPosition(position) {
-    const stage = stageRef.current;
-    const previewStack = previewStackRef.current;
-    const basePosition = {
-      x: clampNumber(position?.x ?? DEFAULT_PREVIEW_STACK_POSITION.x, 0, 100),
-      y: clampNumber(position?.y ?? DEFAULT_PREVIEW_STACK_POSITION.y, 0, 100),
-    };
-
-    if (!stage || !previewStack) return basePosition;
-
-    const stageRect = stage.getBoundingClientRect();
-    const stackRect = previewStack.getBoundingClientRect();
-
-    if (!stageRect.width || !stageRect.height || !stackRect.width || !stackRect.height) {
-      return basePosition;
-    }
-
-    const sideInset = 14;
-    const topInset = 72;
-    const bottomInset = 14;
-    const minX = ((stackRect.width / 2 + sideInset) / stageRect.width) * 100;
-    const maxX = ((stageRect.width - stackRect.width / 2 - sideInset) / stageRect.width) * 100;
-    const minY = ((stackRect.height / 2 + topInset) / stageRect.height) * 100;
-    const maxY = ((stageRect.height - stackRect.height / 2 - bottomInset) / stageRect.height) * 100;
-
-    return {
-      x: minX <= maxX ? clampNumber(basePosition.x, minX, maxX) : 50,
-      y: minY <= maxY ? clampNumber(basePosition.y, minY, maxY) : 50,
-    };
-  }
-
-  function startPreviewStackDrag(event) {
-    if (whiteBalancePickerActive || event.button !== 0) return;
-    if (event.target.closest('button, a, input, select, textarea')) return;
-
-    const stageRect = stageRef.current?.getBoundingClientRect();
-    if (!stageRect?.width || !stageRect?.height) return;
-
-    previewStackDragRef.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      startPosition: previewStackPosition,
-    };
-    event.currentTarget.setPointerCapture?.(event.pointerId);
-    setIsDraggingPreviewStack(true);
-  }
-
-  function movePreviewStack(event) {
-    const dragState = previewStackDragRef.current;
-    if (!dragState || dragState.pointerId !== event.pointerId) return;
-
-    const stageRect = stageRef.current?.getBoundingClientRect();
-    if (!stageRect?.width || !stageRect?.height) return;
-
-    event.preventDefault();
-    const deltaX = ((event.clientX - dragState.startX) / stageRect.width) * 100;
-    const deltaY = ((event.clientY - dragState.startY) / stageRect.height) * 100;
-    setPreviewStackPosition(
-      clampPreviewStackPosition({
-        x: dragState.startPosition.x + deltaX,
-        y: dragState.startPosition.y + deltaY,
-      }),
-    );
-  }
-
-  function stopPreviewStackDrag(event) {
-    const dragState = previewStackDragRef.current;
-    if (!dragState || dragState.pointerId !== event.pointerId) return;
-
-    event.currentTarget.releasePointerCapture?.(event.pointerId);
-    previewStackDragRef.current = null;
-    setIsDraggingPreviewStack(false);
-  }
-
   function startPreviewStackResize(event) {
     if (event.button !== 0 || whiteBalancePickerActive) return;
 
@@ -1898,284 +1764,59 @@ export default function App() {
     event.currentTarget.releasePointerCapture?.(event.pointerId);
     previewStackResizeRef.current = null;
     setIsResizingPreviewStack(false);
-    setPreviewStackPosition((currentPosition) => clampPreviewStackPosition(currentPosition));
   }
 
-  function getStagePointPercent(event) {
-    const stageRect = stageRef.current?.getBoundingClientRect();
-    if (!stageRect?.width || !stageRect?.height) return null;
+  function saveNotesSelection() {
+    const editor = notesEditorRef.current;
+    const selection = window.getSelection?.();
+    if (!editor || !selection?.rangeCount) return;
 
-    return {
-      x: clampNumber(((event.clientX - stageRect.left) / stageRect.width) * 100, 0, 100),
-      y: clampNumber(((event.clientY - stageRect.top) / stageRect.height) * 100, 0, 100),
-    };
+    const range = selection.getRangeAt(0);
+    if (editor.contains(range.commonAncestorContainer)) {
+      notesSelectionRef.current = range.cloneRange();
+    }
   }
 
-  function createTextBoxAtStagePoint(event) {
-    if (!textToolActive || currentView !== 'studio') return;
+  function restoreNotesSelection() {
+    const editor = notesEditorRef.current;
+    const selection = window.getSelection?.();
+    const range = notesSelectionRef.current;
+    if (!editor || !selection || !range) return;
 
-    const point = getStagePointPercent(event);
-    if (!point) return;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    editor.focus();
+  }
 
+  function syncStudioNotes() {
+    const nextNotes = notesEditorRef.current?.innerHTML || '';
+    studioNotesRef.current = nextNotes;
+    localStorage.setItem(STUDIO_NOTES_STORAGE_KEY, nextNotes);
+  }
+
+  function applyNoteBlock(block) {
+    restoreNotesSelection();
+    document.execCommand('formatBlock', false, block);
+    syncStudioNotes();
+    saveNotesSelection();
+  }
+
+  function applyNoteFontSize(size) {
+    restoreNotesSelection();
+    setNoteFontSize(size);
+    document.execCommand('fontSize', false, '7');
+    if (notesEditorRef.current) replaceFontTagsWithSpans(notesEditorRef.current, size);
+    syncStudioNotes();
+    saveNotesSelection();
+  }
+
+  function handleNotesPaste(event) {
     event.preventDefault();
-    const id = crypto.randomUUID?.() || `text-${Date.now()}-${Math.random()}`;
-    const nextBox = {
-      id,
-      text: 'Texte',
-      x: point.x,
-      y: point.y,
-      width: DEFAULT_TEXT_BOX_WIDTH,
-      height: DEFAULT_TEXT_BOX_HEIGHT,
-      fontSize: DEFAULT_TEXT_BOX_FONT_SIZE,
-      minimized: false,
-    };
-
-    setTextBoxes((boxes) => [
-      ...boxes,
-      {
-        ...nextBox,
-        ...clampTextBoxPosition(nextBox),
-      },
-    ]);
-    setTextToolActive(false);
-    requestAnimationFrame(() => {
-      document.querySelector(`[data-text-box-editor="${id}"]`)?.focus();
-    });
-  }
-
-  function updateTextBox(id, updates) {
-    setTextBoxes((boxes) =>
-      boxes.map((box) => {
-        if (box.id !== id) return box;
-
-        const nextBox = {
-          ...box,
-          ...updates,
-          width: clampTextBoxWidth(updates.width ?? box.width),
-          height: clampTextBoxHeight(updates.height ?? box.height),
-          fontSize: clampTextBoxFontSize(updates.fontSize ?? box.fontSize),
-        };
-
-        return {
-          ...nextBox,
-          ...clampTextBoxPosition(nextBox),
-        };
-      }),
-    );
-  }
-
-  function clampTextBoxPosition(box, nextPosition = {}) {
-    const stageRect = stageRef.current?.getBoundingClientRect();
-    const basePosition = {
-      x: clampNumber(nextPosition.x ?? box.x, 0, 100),
-      y: clampNumber(nextPosition.y ?? box.y, 0, 100),
-    };
-
-    if (!stageRect?.width || !stageRect?.height) return basePosition;
-
-    const sideInset = 14;
-    const topInset = 72;
-    const bottomInset = 14;
-    const textBoxWidth = clampTextBoxWidth(box.width);
-    const estimatedTextBoxHeight = box.minimized ? 44 : clampTextBoxHeight(box.height);
-    const minX = ((textBoxWidth / 2 + sideInset) / stageRect.width) * 100;
-    const maxX = ((stageRect.width - textBoxWidth / 2 - sideInset) / stageRect.width) * 100;
-    const minY = (topInset / stageRect.height) * 100;
-    const maxY = ((stageRect.height - estimatedTextBoxHeight - bottomInset) / stageRect.height) * 100;
-
-    return {
-      x: minX <= maxX ? clampNumber(basePosition.x, minX, maxX) : 50,
-      y: minY <= maxY ? clampNumber(basePosition.y, minY, maxY) : 50,
-    };
-  }
-
-  function clampAllTextBoxes(boxes) {
-    return boxes.map((box) => ({
-      ...box,
-      width: clampTextBoxWidth(box.width),
-      height: clampTextBoxHeight(box.height),
-      fontSize: clampTextBoxFontSize(box.fontSize),
-      ...clampTextBoxPosition(box),
-    }));
-  }
-
-  function clampRenderedTextBoxes(boxes) {
-    const stageRect = stageRef.current?.getBoundingClientRect();
-    if (!stageRect?.width || !stageRect?.height) return clampAllTextBoxes(boxes);
-
-    return clampAllTextBoxes(boxes).map((box) => {
-      const textBoxElement = document.querySelector(`[data-text-box="${box.id}"]`);
-      if (!textBoxElement) return box;
-
-      const rect = textBoxElement.getBoundingClientRect();
-      const sideInset = 14;
-      const topInset = 72;
-      const bottomInset = 14;
-      const leftLimit = stageRect.left + sideInset;
-      const rightLimit = stageRect.right - sideInset;
-      const topLimit = stageRect.top + topInset;
-      const bottomLimit = stageRect.bottom - bottomInset;
-      let nextX = box.x;
-      let nextY = box.y;
-
-      if (rect.left < leftLimit) {
-        nextX += ((leftLimit - rect.left) / stageRect.width) * 100;
-      }
-
-      if (rect.right > rightLimit) {
-        nextX -= ((rect.right - rightLimit) / stageRect.width) * 100;
-      }
-
-      if (rect.top < topLimit) {
-        nextY += ((topLimit - rect.top) / stageRect.height) * 100;
-      }
-
-      if (rect.bottom > bottomLimit && rect.height < bottomLimit - topLimit) {
-        nextY -= ((rect.bottom - bottomLimit) / stageRect.height) * 100;
-      }
-
-      return {
-        ...box,
-        ...clampTextBoxPosition(box, { x: nextX, y: nextY }),
-      };
-    });
-  }
-
-  function haveTextBoxGeometriesChanged(currentBoxes, nextBoxes) {
-    if (currentBoxes.length !== nextBoxes.length) return true;
-
-    return currentBoxes.some((box, index) => {
-      const nextBox = nextBoxes[index];
-      return (
-        box.id !== nextBox.id ||
-        Math.abs(box.x - nextBox.x) > 0.001 ||
-        Math.abs(box.y - nextBox.y) > 0.001 ||
-        Math.abs(box.width - nextBox.width) > 0.001 ||
-        Math.abs((box.height || DEFAULT_TEXT_BOX_HEIGHT) - (nextBox.height || DEFAULT_TEXT_BOX_HEIGHT)) > 0.001 ||
-        Math.abs((box.fontSize || DEFAULT_TEXT_BOX_FONT_SIZE) - (nextBox.fontSize || DEFAULT_TEXT_BOX_FONT_SIZE)) > 0.001
-      );
-    });
-  }
-
-  function removeTextBox(id) {
-    setTextBoxes((boxes) => boxes.filter((box) => box.id !== id));
-  }
-
-  function startTextBoxDrag(event, box) {
-    if (event.button !== 0) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-    textBoxDragRef.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      startPosition: { x: box.x, y: box.y },
-    };
-    event.currentTarget.setPointerCapture?.(event.pointerId);
-    setDraggingTextBoxId(box.id);
-  }
-
-  function moveTextBox(event, id) {
-    const dragState = textBoxDragRef.current;
-    if (!dragState || dragState.pointerId !== event.pointerId) return;
-
-    const stageRect = stageRef.current?.getBoundingClientRect();
-    if (!stageRect?.width || !stageRect?.height) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-    const deltaX = ((event.clientX - dragState.startX) / stageRect.width) * 100;
-    const deltaY = ((event.clientY - dragState.startY) / stageRect.height) * 100;
-    setTextBoxes((boxes) =>
-      boxes.map((box) =>
-        box.id === id
-          ? {
-              ...box,
-              ...clampTextBoxPosition(box, {
-                x: dragState.startPosition.x + deltaX,
-                y: dragState.startPosition.y + deltaY,
-              }),
-            }
-          : box,
-      ),
-    );
-  }
-
-  function stopTextBoxDrag(event) {
-    const dragState = textBoxDragRef.current;
-    if (!dragState || dragState.pointerId !== event.pointerId) return;
-
-    event.stopPropagation();
-    event.currentTarget.releasePointerCapture?.(event.pointerId);
-    textBoxDragRef.current = null;
-    setDraggingTextBoxId('');
-  }
-
-  function clampTextBoxWidth(width) {
-    const stageRect = stageRef.current?.getBoundingClientRect();
-    const maxByStage = stageRect?.width ? stageRect.width - 28 : MAX_TEXT_BOX_WIDTH;
-    return clampNumber(width, MIN_TEXT_BOX_WIDTH, Math.min(MAX_TEXT_BOX_WIDTH, maxByStage));
-  }
-
-  function clampTextBoxHeight(height) {
-    const stageRect = stageRef.current?.getBoundingClientRect();
-    const maxByStage = stageRect?.height ? stageRect.height - 86 : MAX_TEXT_BOX_HEIGHT;
-    return clampNumber(height || DEFAULT_TEXT_BOX_HEIGHT, MIN_TEXT_BOX_HEIGHT, Math.min(MAX_TEXT_BOX_HEIGHT, maxByStage));
-  }
-
-  function clampTextBoxFontSize(fontSize) {
-    return clampNumber(fontSize || DEFAULT_TEXT_BOX_FONT_SIZE, MIN_TEXT_BOX_FONT_SIZE, MAX_TEXT_BOX_FONT_SIZE);
-  }
-
-  function startTextBoxResize(event, box) {
-    if (event.button !== 0 || box.minimized) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-    textBoxResizeRef.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      startWidth: box.width,
-      startHeight: box.height || DEFAULT_TEXT_BOX_HEIGHT,
-    };
-    event.currentTarget.setPointerCapture?.(event.pointerId);
-    setResizingTextBoxId(box.id);
-  }
-
-  function resizeTextBox(event, id) {
-    const resizeState = textBoxResizeRef.current;
-    if (!resizeState || resizeState.pointerId !== event.pointerId) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-    setTextBoxes((boxes) =>
-      boxes.map((box) => {
-        if (box.id !== id) return box;
-
-        const nextBox = {
-          ...box,
-          width: clampTextBoxWidth(resizeState.startWidth + event.clientX - resizeState.startX),
-          height: clampTextBoxHeight(resizeState.startHeight + event.clientY - resizeState.startY),
-        };
-
-        return {
-          ...nextBox,
-          ...clampTextBoxPosition(nextBox),
-        };
-      }),
-    );
-  }
-
-  function stopTextBoxResize(event) {
-    const resizeState = textBoxResizeRef.current;
-    if (!resizeState || resizeState.pointerId !== event.pointerId) return;
-
-    event.stopPropagation();
-    event.currentTarget.releasePointerCapture?.(event.pointerId);
-    textBoxResizeRef.current = null;
-    setResizingTextBoxId('');
+    restoreNotesSelection();
+    const pastedText = sanitizePastedNotesText(event.clipboardData?.getData('text/plain') || '');
+    document.execCommand('insertText', false, pastedText);
+    syncStudioNotes();
+    saveNotesSelection();
   }
 
   function stopAudio() {
@@ -2384,13 +2025,13 @@ export default function App() {
         <div className="topbar-actions">
           {currentView === 'studio' && (
             <button
-              className={textToolActive ? 'nav-button tool-button active' : 'nav-button tool-button'}
+              className="nav-button"
               type="button"
-              aria-pressed={textToolActive}
-              onClick={() => setTextToolActive((active) => !active)}
+              aria-label={`Placer le retour vidéo à ${previewStackSide === 'right' ? 'gauche' : 'droite'}`}
+              onClick={() => setPreviewStackSide((side) => (side === 'right' ? 'left' : 'right'))}
             >
-              <Type size={16} />
-              Texte
+              {previewStackSide === 'right' ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
+              Retour {previewStackSide === 'right' ? 'gauche' : 'droite'}
             </button>
           )}
           <button
@@ -2688,36 +2329,65 @@ export default function App() {
 
         <section
           ref={stageRef}
-          className={textToolActive ? 'stage text-tool' : 'stage'}
+          className={`stage preview-${previewStackSide}`}
           aria-label="Aperçu et enregistrement"
+          style={{ '--preview-stack-width': `${previewStackWidth}px` }}
         >
-          {textToolActive && (
-            <button
-              className="text-placement-layer"
-              type="button"
-              aria-label="Placer un texte"
-              onClick={createTextBoxAtStagePoint}
+          <div className="notes-zone">
+            <div className="notes-toolbar" aria-label="Typographie des notes">
+              <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => applyNoteBlock('h1')}>
+                <Heading1 size={16} />
+              </button>
+              <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => applyNoteBlock('h2')}>
+                <Heading2 size={16} />
+              </button>
+              <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => applyNoteBlock('p')}>
+                <Pilcrow size={16} />
+              </button>
+              <label className="notes-size-control">
+                <Type size={16} />
+                <select
+                  value={noteFontSize}
+                  aria-label="Taille du texte"
+                  onMouseDown={saveNotesSelection}
+                  onChange={(event) => applyNoteFontSize(Number(event.target.value))}
+                >
+                  {NOTE_TEXT_SIZES.map((size) => (
+                    <option key={size} value={size}>
+                      {size}px
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div
+              ref={notesEditorRef}
+              className="notes-editor"
+              contentEditable
+              suppressContentEditableWarning
+              aria-label="Notes de tournage"
+              data-placeholder="Notes"
+              spellCheck="true"
+              onInput={syncStudioNotes}
+              onKeyUp={saveNotesSelection}
+              onMouseUp={saveNotesSelection}
+              onBlur={saveNotesSelection}
+              onPaste={handleNotesPaste}
+              dangerouslySetInnerHTML={{ __html: studioNotesRef.current }}
             />
-          )}
+          </div>
 
           <div
-            ref={previewStackRef}
             className={[
               'preview-stack',
-              isDraggingPreviewStack ? 'dragging' : '',
+              `side-${previewStackSide}`,
               isResizingPreviewStack ? 'resizing' : '',
             ]
               .filter(Boolean)
               .join(' ')}
             style={{
-              left: `${previewStackPosition.x}%`,
-              top: `${previewStackPosition.y}%`,
               width: `${previewStackWidth}px`,
             }}
-            onPointerDown={startPreviewStackDrag}
-            onPointerMove={movePreviewStack}
-            onPointerUp={stopPreviewStackDrag}
-            onPointerCancel={stopPreviewStackDrag}
           >
             <div className={whiteBalancePickerActive ? 'preview-wrap picking-white' : 'preview-wrap'}>
               <video ref={previewRef} className="raw-preview" autoPlay playsInline muted />
@@ -2768,97 +2438,6 @@ export default function App() {
               )}
             </div>
           </div>
-
-          {textBoxes.map((box) => (
-            <div
-              key={box.id}
-              data-text-box={box.id}
-              className={[
-                'text-box',
-                draggingTextBoxId === box.id ? 'dragging' : '',
-                resizingTextBoxId === box.id ? 'resizing' : '',
-                box.minimized ? 'minimized' : '',
-              ]
-                .filter(Boolean)
-                .join(' ')}
-              style={{
-                left: `${box.x}%`,
-                top: `${box.y}%`,
-                width: `${box.width}px`,
-                height: box.minimized ? undefined : `${clampTextBoxHeight(box.height)}px`,
-                maxHeight: `calc(100% - ${box.y}% - 14px)`,
-                '--text-box-font-size': `${clampTextBoxFontSize(box.fontSize)}px`,
-              }}
-              onPointerDown={(event) => event.stopPropagation()}
-            >
-              <div className="text-box-toolbar">
-                <button
-                  className="text-box-drag"
-                  type="button"
-                  aria-label="Déplacer le texte"
-                  onPointerDown={(event) => startTextBoxDrag(event, box)}
-                  onPointerMove={(event) => moveTextBox(event, box.id)}
-                  onPointerUp={stopTextBoxDrag}
-                  onPointerCancel={stopTextBoxDrag}
-                >
-                  <span />
-                </button>
-                <label className="text-box-size-control">
-                  <span>Taille</span>
-                  <select
-                    value={clampTextBoxFontSize(box.fontSize)}
-                    aria-label="Taille du texte"
-                    onChange={(event) => updateTextBox(box.id, { fontSize: Number(event.target.value) })}
-                  >
-                    {TEXT_BOX_FONT_SIZES.map((size) => (
-                      <option key={size} value={size}>
-                        {size}px
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <div className="text-box-actions">
-                  <button
-                    className="text-box-minimize"
-                    type="button"
-                    aria-label={box.minimized ? 'Restaurer le texte' : 'Réduire le texte'}
-                    onClick={() => updateTextBox(box.id, { minimized: !box.minimized })}
-                  >
-                    {box.minimized ? <Maximize2 size={13} /> : <Minimize2 size={13} />}
-                  </button>
-                  <button
-                    className="text-box-delete"
-                    type="button"
-                    aria-label="Supprimer le texte"
-                    onClick={() => removeTextBox(box.id)}
-                  >
-                    <Trash2 size={13} />
-                  </button>
-                </div>
-              </div>
-              {box.minimized && <div className="text-box-min-preview">{box.text || 'Texte'}</div>}
-              <div
-                className="text-box-editor"
-                contentEditable
-                suppressContentEditableWarning
-                data-text-box-editor={box.id}
-                onInput={(event) => updateTextBox(box.id, { text: event.currentTarget.textContent || '' })}
-              >
-                {box.text}
-              </div>
-              {!box.minimized && (
-                <button
-                  className="text-box-resize"
-                  type="button"
-                  aria-label="Redimensionner le texte"
-                  onPointerDown={(event) => startTextBoxResize(event, box)}
-                  onPointerMove={(event) => resizeTextBox(event, box.id)}
-                  onPointerUp={stopTextBoxResize}
-                  onPointerCancel={stopTextBoxResize}
-                />
-              )}
-            </div>
-          ))}
 
           {error && <p className="error-message">{error}</p>}
         </section>
