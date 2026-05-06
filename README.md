@@ -1,45 +1,84 @@
 # ReTok Studio
 
-ReTok Studio est une app web locale pour préparer, lire et enregistrer des vidéos verticales depuis la caméra de l'ordinateur avec une source audio choisie. Le projet vise un workflow simple pour créer des takes au format social, garder des notes de tournage visibles, contrôler l'image et conserver les enregistrements localement.
+ReTok Studio is a local web app for musicians who want to record music covers fast.
 
-Le dépôt est public pour suivre l'avancement du projet, tester les nouvelles versions et installer l'app en local.
+The core idea is simple: keep the camera, clean audio source, lyrics, notes, and recording controls in one place, so you can record a vertical cover, download the take, and upload it without opening a video editor just to replace the audio afterwards.
 
-## Ce que l'app permet de faire
+It is built for the common cover workflow:
 
-- Enregistrer une vidéo verticale 9:16 avec audio.
-- Choisir la caméra et la source audio disponibles sur la machine.
-- Prévisualiser le retour vidéo à droite par défaut, ou le basculer à gauche.
-- Ajuster l'image brute : saturation, contraste, luminosité, miroir et balance des blancs.
-- Utiliser une pipette pour caler la balance des blancs sur le rush brut.
-- Écrire des notes de tournage dans une zone centrale type page d'édition, avec titres, sous-titres et tailles de texte.
-- Sauvegarder les notes localement dans le navigateur.
-- Conserver les takes dans une bibliothèque locale avec miniatures, lecture, renommage, suppression et téléchargement.
-- Télécharger en MP4 quand le navigateur supporte l'enregistrement MP4 natif, sinon en WebM.
+1. Put your lyrics, chords, structure, or cues in the center editor.
+2. Select the camera and the clean audio source you actually want in the final video.
+3. Record a vertical take.
+4. Download it.
+5. Upload it to TikTok, Reels, Shorts, or any other platform.
 
-## Pour qui
+No separate sync step. No audio replacement pass. No heavy editing suite for a quick cover.
 
-ReTok Studio est pensé pour les créateurs, musiciens, streamers, monteurs et makers qui veulent enregistrer rapidement des formats verticaux depuis leur ordinateur, sans installer une suite vidéo lourde.
+## Who This Is For
 
-Quelques cas d'usage :
+ReTok Studio is mainly for:
 
-- enregistrer une performance face caméra ;
-- lire un script, des paroles ou des notes pendant la prise ;
-- capturer une source audio virtuelle comme BlackHole ou Loopback ;
-- tester des rendus caméra avant montage ;
-- conserver une petite bibliothèque de prises locales.
+- singers recording covers;
+- guitarists, pianists, producers, and instrumentalists filming quick performances;
+- musicians using a clean mix from an audio interface or virtual audio device;
+- creators who want lyrics or chords visible while recording;
+- people who want a local, simple setup for repeatable vertical takes.
 
-## Prérequis
+It can also be useful for other creators, but music covers are the main use case.
 
-- Node.js 18 ou plus récent.
-- Un navigateur Chromium récent, recommandé : Google Chrome.
-- Une caméra et une source audio disponibles.
-- Pour capturer le son système sur macOS : un périphérique audio virtuel comme BlackHole ou Loopback.
+## Why It Exists
 
-Les APIs caméra, micro et enregistrement dépendent du navigateur. Safari et Firefox peuvent avoir des limitations différentes, notamment sur les formats de sortie.
+Recording a cover often becomes more complicated than it should be:
 
-## Installation
+- the webcam records one audio source;
+- the clean mic or mix is somewhere else;
+- lyrics are in another window;
+- the final video needs a manual audio replacement in an editor;
+- the whole process takes longer than the performance.
 
-Clone le projet puis installe les dépendances :
+ReTok Studio tries to remove that friction. It records the selected video and selected audio together from the start, while keeping your lyrics or notes on screen.
+
+## Features
+
+- Vertical 9:16 recording for social platforms.
+- Camera source selection.
+- Audio input selection.
+- Clean audio recording through browser-supported input devices.
+- Central lyrics and notes editor with headings, subtitles, paragraphs, and text sizes.
+- Video preview on the right by default, with a left/right toggle.
+- Mirror mode.
+- Raw image controls: saturation, contrast, brightness.
+- White balance controls with a picker on the raw camera feed.
+- Local takes library with thumbnails.
+- Playback, rename, delete, and download for recorded takes.
+- MP4 output when the browser supports native MP4 recording.
+- WebM fallback when MP4 is not available.
+- Local-first storage: no server upload by the app.
+
+## Typical Music Cover Setup
+
+For the cleanest result, use a dedicated audio input:
+
+- an audio interface with your microphone or instrument;
+- a virtual audio device such as BlackHole or Loopback on macOS;
+- a DAW or mixer output routed into a browser-visible input;
+- a USB microphone selected directly in the app.
+
+Then paste your lyrics or chords into the notes area, frame your shot, and record.
+
+## Requirements
+
+- Node.js 18 or newer.
+- A recent Chromium-based browser. Google Chrome is recommended.
+- A camera.
+- An audio input device.
+- Optional for system/DAW audio on macOS: BlackHole, Loopback, an aggregate device, or another virtual audio driver.
+
+Browser media APIs vary by browser. Chrome currently gives the most predictable experience for camera, microphone, canvas capture, and `MediaRecorder`.
+
+## Install
+
+Clone the repository and install dependencies:
 
 ```bash
 git clone https://github.com/GabrielSandap/ReTok_Studio.git
@@ -47,111 +86,118 @@ cd ReTok_Studio
 npm install
 ```
 
-## Lancer en local
+## Run Locally
 
-Pour utiliser caméra et micro sur la même machine, lance le serveur local :
+For normal use on the same computer:
 
 ```bash
 npm run dev:local
 ```
 
-Ouvre ensuite l'URL affichée par Vite, par exemple :
+Open the URL shown by Vite, usually:
 
 ```text
 http://localhost:5173
 ```
 
-Chrome bloque caméra et micro sur une adresse réseau non sécurisée comme `http://192.168.x.x:5173`. Pour exposer l'app sur le réseau local, utilise :
+Camera and microphone access are allowed on `localhost`. Browsers usually block camera and microphone access on non-secure network URLs such as `http://192.168.x.x:5173`.
+
+If you need to expose the app on your local network:
 
 ```bash
 npm run dev
 ```
 
-Dans ce cas, il faut servir l'app en HTTPS pour que les appareils du réseau puissent accéder à la caméra et au micro.
+For network devices, serve the app over HTTPS so the browser can grant camera and microphone permissions.
 
-## Build de production
+## Build
 
 ```bash
 npm run build
 ```
 
-Pour tester le build :
+Preview the production build:
 
 ```bash
 npm run preview
 ```
 
-## Données et confidentialité
+## Data and Privacy
 
-ReTok Studio fonctionne localement dans le navigateur.
+ReTok Studio runs locally in your browser.
 
-- Les vidéos sont stockées dans IndexedDB.
-- Les notes et préférences sont stockées dans `localStorage`.
-- Les fichiers ne sont pas envoyés à un serveur par l'app.
-- Effacer les données du site dans le navigateur supprimera la bibliothèque locale et les notes.
+- Recorded takes are stored in IndexedDB.
+- Notes and preferences are stored in `localStorage`.
+- The app does not upload your recordings to a server.
+- Clearing site data in the browser will remove the local library and notes.
 
-## Audio
+## Audio Notes
 
-Le navigateur ne peut pas capturer directement toute la sortie système macOS comme une entrée audio standard. Pour enregistrer le son d'une app, d'un navigateur, d'un instrument virtuel ou d'un mix système, expose cette sortie comme source d'entrée avec :
+Browsers cannot directly capture every macOS system output as a normal microphone input. If you want to record a DAW, backing track, instrument plugin, or system mix, route it into an input device that the browser can see.
 
-- une interface audio ;
-- un périphérique agrégé ;
-- BlackHole ;
-- Loopback ;
-- un autre driver audio virtuel.
+Common options:
 
-Sélectionne ensuite cette source dans le panneau `Sources`.
+- audio interface loopback;
+- BlackHole;
+- Loopback;
+- aggregate device;
+- virtual mixer.
 
-## Vidéo
+Once the source appears as an input device, select it in ReTok Studio.
 
-Les takes sont composées dans un canvas vertical 9:16 avant enregistrement. Le rendu applique les réglages de caméra et de couleur avant la capture finale.
+## Video Notes
 
-Le format de sortie dépend du support natif de `MediaRecorder` :
+Takes are rendered into a vertical 9:16 canvas before recording. Image adjustments are applied before the final capture.
 
-- MP4 quand le navigateur le supporte ;
-- WebM en fallback.
+Output format depends on browser support:
 
-## Structure du projet
+- MP4 when native `MediaRecorder` MP4 is available;
+- WebM fallback otherwise.
+
+## Project Structure
 
 ```text
 src/
-  App.jsx       Interface, caméra, audio, enregistrement, bibliothèque et notes
-  main.jsx      Point d'entrée React
-  styles.css    Styles de l'application
+  App.jsx       Main app: camera, audio, recording, library, notes, and UI
+  main.jsx      React entry point
+  styles.css    Application styles
 ```
 
-Le projet est volontairement compact pour accélérer l'itération. Une refactorisation en modules dédiés est prévue si l'app continue de grandir.
+The project is intentionally compact while the workflow is still evolving. If the app grows, the next step is to split camera, audio, recording, library, and notes into dedicated modules.
 
-## Scripts disponibles
+## Scripts
 
 ```bash
-npm run dev:local   # serveur Vite sur localhost
-npm run dev         # serveur Vite exposé sur le réseau
-npm run build       # build production
-npm run preview     # prévisualisation du build
+npm run dev:local   # Vite on localhost
+npm run dev         # Vite exposed on the local network
+npm run build       # production build
+npm run preview     # preview production build
 ```
 
-## État du projet
+## Project Status
 
-Le projet est en développement actif. Le dépôt public sert à suivre l'évolution, tester l'app, remonter des problèmes et comprendre les choix techniques.
+ReTok Studio is in active development. The public repository is meant to let people follow the project, download it, try it locally, and understand the direction.
 
-Priorités techniques à venir :
+Current technical priorities:
 
-- durcir l'éditeur de notes rich-text ;
-- mieux isoler les modules caméra, audio, bibliothèque et notes ;
-- ajouter des tests de non-régression ;
-- améliorer les exports et les options de format ;
-- documenter les workflows audio par plateforme.
+- harden the rich-text lyrics/notes editor;
+- improve recording cleanup and robustness;
+- split the large app file into focused modules;
+- add regression tests;
+- document audio routing workflows for common musician setups;
+- improve export options.
 
-## Contribuer
+## Contributing
 
-Les issues et suggestions sont bienvenues. Pour proposer une modification :
+Issues and suggestions are welcome, especially from musicians using the app for real cover workflows.
 
-1. Fork le dépôt.
-2. Crée une branche dédiée.
-3. Lance `npm run build`.
-4. Ouvre une pull request avec une description claire.
+To propose a change:
 
-## Licence
+1. Fork the repository.
+2. Create a focused branch.
+3. Run `npm run build`.
+4. Open a pull request with a clear description.
 
-Aucune licence open source explicite n'est encore définie. Le code est public pour consultation, suivi et installation locale. Une licence sera ajoutée quand les conditions de réutilisation seront fixées.
+## License
+
+No explicit open source license has been selected yet. The code is public so people can follow the work, inspect it, and run it locally. A license will be added when reuse terms are defined.
