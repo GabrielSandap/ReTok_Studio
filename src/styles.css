@@ -651,10 +651,46 @@ select:disabled {
 button:focus-visible,
 a:focus-visible,
 select:focus-visible,
+.audio-gain-control input:focus-visible,
 .focal-mode-options button:focus-visible {
   border-color: var(--accent-dark);
   box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.16);
   outline: none;
+}
+
+.audio-gain-control {
+  display: grid;
+  gap: 5px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-muted) 72%, var(--surface));
+}
+
+.audio-gain-control span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 780;
+}
+
+.audio-gain-control strong {
+  flex: 0 0 auto;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.audio-gain-control input {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent-dark);
+}
+
+.audio-gain-control input:disabled {
+  opacity: 0.62;
 }
 
 .audio-meter {
@@ -884,8 +920,11 @@ select:focus-visible,
   min-width: 0;
   min-height: 0;
   height: 100%;
-  --preview-stack-width: 220px;
-  padding: 72px 14px 14px;
+  --notes-zone-top: 82px;
+  --notes-editor-top: 48px;
+  --preview-stack-width: clamp(300px, 25vw, 508px);
+  --notes-gap: 26px;
+  padding: 0;
   overflow: hidden;
   border: 0;
   border-radius: 8px;
@@ -895,39 +934,35 @@ select:focus-visible,
 
 .notes-zone {
   position: absolute;
-  top: 96px;
-  bottom: 28px;
-  left: 28px;
-  right: calc(var(--preview-stack-width) + 72px);
+  inset: var(--notes-zone-top) 22px 22px;
   z-index: 1;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  gap: 8px;
+  gap: 10px;
   min-width: 0;
-  padding: 10px;
   overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  background: #f8f6f3;
+  pointer-events: none;
 }
 
-.stage.preview-left .notes-zone {
-  right: 28px;
-  left: calc(var(--preview-stack-width) + 72px);
+.notes-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--preview-stack-width) minmax(0, 1fr);
+  gap: var(--notes-gap);
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
 }
 
 .notes-editor {
-  width: min(100%, 900px);
+  width: 100%;
   height: 100%;
   min-width: 0;
-  justify-self: center;
-  padding: 18px 24px 48px;
-  overflow-y: auto;
+  padding: 18px 22px 48px;
   overscroll-behavior: contain;
-  border: 0;
-  border-radius: 0;
+  border: 1px solid var(--line);
+  border-radius: 5px;
   color: #11100e;
-  background: #ffffff;
+  background: #f8f6f3;
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 28px;
@@ -935,6 +970,23 @@ select:focus-visible,
   line-height: 1.5;
   letter-spacing: 0;
   outline: 0;
+  pointer-events: auto;
+}
+
+.notes-editor-left {
+  grid-column: 1;
+  overflow: hidden;
+}
+
+.notes-editor-right {
+  grid-column: 3;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.notes-center-spacer {
+  grid-column: 2;
+  pointer-events: none;
 }
 
 .notes-editor,
@@ -950,11 +1002,16 @@ select:focus-visible,
 .notes-toolbar {
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 6px;
+  width: max-content;
   min-width: 0;
-  padding: 0 4px 8px;
-  border-bottom: 1px solid var(--line);
+  min-height: 36px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #ffffff;
+  pointer-events: auto;
 }
 
 .notes-toolbar button,
@@ -979,7 +1036,7 @@ select:focus-visible,
 .notes-size-control:focus-within {
   border-color: var(--line);
   color: var(--text);
-  background: #ffffff;
+  background: var(--surface-muted);
 }
 
 .notes-size-control {
@@ -1034,26 +1091,16 @@ select:focus-visible,
 .preview-stack {
   position: absolute;
   z-index: 4;
-  top: calc(50% + 29px);
+  top: calc(var(--notes-zone-top) + var(--notes-editor-top));
+  left: 50%;
   display: grid;
   justify-items: center;
   gap: 10px;
-  min-width: 180px;
+  width: var(--preview-stack-width);
+  min-width: 0;
   max-width: calc(100% - 28px);
-  transform: translateY(-50%);
+  transform: translateX(-50%);
   user-select: none;
-}
-
-.preview-stack.side-left {
-  left: 14px;
-}
-
-.preview-stack.side-right {
-  right: 14px;
-}
-
-.preview-stack.resizing {
-  cursor: nwse-resize;
 }
 
 .preview-stack button,
@@ -1080,58 +1127,6 @@ select:focus-visible,
     0 28px 70px rgba(36, 30, 24, 0.16),
     0 10px 24px rgba(36, 30, 24, 0.1),
     0 0 0 1px rgba(36, 30, 24, 0.04);
-}
-
-.preview-resize-handle {
-  position: absolute;
-  right: 5px;
-  bottom: 5px;
-  z-index: 3;
-  width: 34px;
-  height: 34px;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  cursor: nwse-resize;
-}
-
-.preview-resize-handle::before,
-.preview-resize-handle::after {
-  content: "";
-  position: absolute;
-  right: 7px;
-  bottom: 7px;
-  border-right: 2px solid rgba(255, 255, 255, 0.82);
-  border-bottom: 2px solid rgba(255, 255, 255, 0.82);
-  border-bottom-right-radius: 3px;
-  filter: drop-shadow(0 1px 2px rgba(8, 10, 9, 0.62));
-}
-
-.preview-resize-handle::before {
-  width: 15px;
-  height: 15px;
-}
-
-.preview-resize-handle::after {
-  right: 13px;
-  bottom: 13px;
-  width: 8px;
-  height: 8px;
-  opacity: 0.56;
-}
-
-.preview-resize-handle:hover,
-.preview-resize-handle:focus-visible {
-  outline: 0;
-}
-
-.preview-resize-handle:hover::before,
-.preview-resize-handle:focus-visible::before,
-.preview-resize-handle:hover::after,
-.preview-resize-handle:focus-visible::after {
-  border-color: #ffffff;
-  opacity: 1;
 }
 
 .preview-wrap canvas {
@@ -1550,7 +1545,32 @@ select:focus-visible,
     padding: 12px;
   }
 
-  .preview-stack {
-    min-width: 220px;
+  .stage {
+    --notes-zone-top: 72px;
+    --notes-editor-top: 46px;
+    --preview-stack-width: clamp(180px, 27vw, 240px);
+    --notes-gap: 14px;
   }
+
+  .notes-zone {
+    inset: var(--notes-zone-top) 12px 18px;
+  }
+
+  .notes-editor {
+    padding: 14px 12px 36px;
+    font-size: 22px;
+  }
+
+  .notes-editor h1 {
+    font-size: 38px;
+  }
+
+  .notes-editor h2 {
+    font-size: 30px;
+  }
+
+  .notes-editor p {
+    font-size: 22px;
+  }
+
 }

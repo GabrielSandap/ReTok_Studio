@@ -41,14 +41,22 @@ const SKIN_SMOOTHING_ALPHA = 0.38;
 const DENOISE_SCALE = 0.42;
 const WIDE_CAMERA_STORAGE_KEY = 'retok-wide-camera-id';
 const WIDE_CAMERA_MANUAL_KEY = 'retok-wide-camera-manual';
+const AUDIO_SOURCE_STORAGE_KEY = 'retok-audio-source-id';
+const AUDIO_SOURCE_LABEL_STORAGE_KEY = 'retok-audio-source-label';
+const RECORDING_AUDIO_GAIN_STORAGE_KEY = 'retok-recording-audio-gain';
 const DEFAULT_FOCAL_MODE_KEY = 'wide';
-const REMOVED_STUDIO_STORAGE_KEYS = ['retok-preview-stack-position', 'retok-text-boxes', 'retok-preview-stack-width'];
-const PREVIEW_STACK_WIDTH_STORAGE_KEY = 'retok-preview-stack-width-v2';
+const DEFAULT_RECORDING_AUDIO_GAIN = 2.8;
+const MIN_RECORDING_AUDIO_GAIN = 1;
+const MAX_RECORDING_AUDIO_GAIN = 6;
+const REMOVED_STUDIO_STORAGE_KEYS = [
+  'retok-preview-stack-position',
+  'retok-text-boxes',
+  'retok-preview-stack-width',
+  'retok-preview-stack-width-v2',
+];
 const STUDIO_NOTES_STORAGE_KEY = 'retok-studio-notes';
-const DEFAULT_PREVIEW_STACK_WIDTH = 220;
-const MIN_PREVIEW_STACK_WIDTH = 180;
-const MAX_PREVIEW_STACK_WIDTH = 520;
-const NOTE_TEXT_SIZES = [16, 18, 22, 26, 32, 40, 52];
+const NOTES_SELECTION_MARKER_ATTRIBUTE = 'data-retok-selection-marker';
+const NOTE_TEXT_SIZES = [16, 18, 22, 26, 28, 32, 40, 52];
 
 function getLocalhostOrigin() {
   if (typeof window === 'undefined') return 'http://localhost:5173';
@@ -171,6 +179,31 @@ function deviceName(devices, deviceId, fallback) {
   return device.label || `${fallback} ${index + 1}`;
 }
 
+function isBrowserDefaultAudioDevice(device) {
+  return !device?.deviceId || device.deviceId === 'default' || device.deviceId === 'communications';
+}
+
+function resolveAudioDeviceId(devices, currentDeviceId) {
+  const currentDevice = devices.find((device) => device.deviceId === currentDeviceId);
+  const storedSelection = readStoredAudioSelection();
+  const storedDevice = storedSelection.deviceId
+    ? devices.find((device) => device.deviceId === storedSelection.deviceId)
+    : null;
+  const storedLabelDevice = storedSelection.label
+    ? devices.find((device) => device.label && device.label === storedSelection.label)
+    : null;
+
+  if (storedDevice && !isBrowserDefaultAudioDevice(storedDevice)) return storedDevice.deviceId;
+  if (storedLabelDevice && !isBrowserDefaultAudioDevice(storedLabelDevice)) return storedLabelDevice.deviceId;
+  if (currentDevice && !isBrowserDefaultAudioDevice(currentDevice)) return currentDevice.deviceId;
+  return devices.find((device) => !isBrowserDefaultAudioDevice(device))?.deviceId || currentDevice?.deviceId || devices[0]?.deviceId || '';
+}
+
+function formatGainDb(gain) {
+  const db = 20 * Math.log10(Math.max(0.01, Number(gain) || 1));
+  return `${db >= 0 ? '+' : ''}${db.toFixed(1)} dB`;
+}
+
 function makeAudioConstraints(deviceId) {
   return {
     video: false,
@@ -267,9 +300,28 @@ function saveWideCameraSelection(deviceId, manual) {
   localStorage.setItem(WIDE_CAMERA_MANUAL_KEY, String(manual));
 }
 
-function readStoredPreviewStackWidth() {
-  if (typeof localStorage === 'undefined') return DEFAULT_PREVIEW_STACK_WIDTH;
-  return clampNumber(localStorage.getItem(PREVIEW_STACK_WIDTH_STORAGE_KEY) || DEFAULT_PREVIEW_STACK_WIDTH, MIN_PREVIEW_STACK_WIDTH, MAX_PREVIEW_STACK_WIDTH);
+function readStoredAudioSelection() {
+  if (typeof localStorage === 'undefined') return { deviceId: '', label: '' };
+
+  return {
+    deviceId: localStorage.getItem(AUDIO_SOURCE_STORAGE_KEY) || '',
+    label: localStorage.getItem(AUDIO_SOURCE_LABEL_STORAGE_KEY) || '',
+  };
+}
+
+function saveAudioSelection(device) {
+  if (typeof localStorage === 'undefined' || !device?.deviceId) return;
+  localStorage.setItem(AUDIO_SOURCE_STORAGE_KEY, device.deviceId);
+  if (device.label) localStorage.setItem(AUDIO_SOURCE_LABEL_STORAGE_KEY, device.label);
+}
+
+function readStoredRecordingAudioGain() {
+  if (typeof localStorage === 'undefined') return DEFAULT_RECORDING_AUDIO_GAIN;
+  return clampNumber(
+    localStorage.getItem(RECORDING_AUDIO_GAIN_STORAGE_KEY) || DEFAULT_RECORDING_AUDIO_GAIN,
+    MIN_RECORDING_AUDIO_GAIN,
+    MAX_RECORDING_AUDIO_GAIN,
+  );
 }
 
 function readStoredStudioNotes() {
@@ -480,6 +532,84 @@ function pickRecorderFormat() {
 function isMp4RecordingSupported() {
   if (!window.MediaRecorder?.isTypeSupported) return false;
   return RECORDER_FORMATS.some((format) => format.extension === 'mp4' && MediaRecorder.isTypeSupported(format.mimeType));
+}
+
+function stopStreamTracks(stream) {
+  stream?.getTracks?.().forEach((track) => track.stop());
+}
+
+function getLiveAudioTracks(stream) {
+  return stream?.getAudioTracks?.().filter((track) => track.readyState === 'live') || [];
+}
+
+async function createCenteredMonoAudioPipeline(inputStream, gainValue = DEFAULT_RECORDING_AUDIO_GAIN) {
+  if (!getLiveAudioTracks(inputStream).length) {
+    stopStreamTracks(inputStream);
+    throw new Error('Aucune piste audio disponible.');
+  }
+
+  const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextConstructor) {
+    return {
+      stream: inputStream,
+      stop: () => stopStreamTracks(inputStream),
+    };
+  }
+
+  let audioContext;
+
+  try {
+    audioContext = new AudioContextConstructor();
+    await audioContext.resume?.();
+
+    const source = audioContext.createMediaStreamSource(inputStream);
+    const splitter = audioContext.createChannelSplitter(2);
+    const leftGain = audioContext.createGain();
+    const rightGain = audioContext.createGain();
+    const recordingGain = audioContext.createGain();
+    const limiter = audioContext.createDynamicsCompressor();
+    const stereoMerger = audioContext.createChannelMerger(2);
+    const destination = audioContext.createMediaStreamDestination();
+
+    leftGain.gain.value = 1;
+    rightGain.gain.value = 1;
+    recordingGain.gain.value = clampNumber(gainValue, MIN_RECORDING_AUDIO_GAIN, MAX_RECORDING_AUDIO_GAIN);
+    limiter.threshold.value = -6;
+    limiter.knee.value = 0;
+    limiter.ratio.value = 18;
+    limiter.attack.value = 0.003;
+    limiter.release.value = 0.18;
+
+    source.connect(splitter);
+    splitter.connect(leftGain, 0);
+    splitter.connect(rightGain, 1);
+    leftGain.connect(recordingGain);
+    rightGain.connect(recordingGain);
+    recordingGain.connect(limiter);
+    limiter.connect(stereoMerger, 0, 0);
+    limiter.connect(stereoMerger, 0, 1);
+    stereoMerger.connect(destination);
+
+    return {
+      stream: destination.stream,
+      stop: () => {
+        stopStreamTracks(destination.stream);
+        stopStreamTracks(inputStream);
+        source.disconnect();
+        splitter.disconnect();
+        leftGain.disconnect();
+        rightGain.disconnect();
+        recordingGain.disconnect();
+        limiter.disconnect();
+        stereoMerger.disconnect();
+        audioContext.close?.();
+      },
+    };
+  } catch (error) {
+    stopStreamTracks(inputStream);
+    audioContext?.close?.();
+    throw error;
+  }
 }
 
 function openLibraryDb() {
@@ -1144,12 +1274,77 @@ function estimateWhiteBalanceFromSample({ r, g, b }) {
   };
 }
 
+function getSplittableTextLength(node) {
+  if (!node) return 0;
+  if (node.nodeType === Node.TEXT_NODE) return node.nodeValue?.length || 0;
+  if (node.nodeName === 'BR') return 1;
+
+  return Array.from(node.childNodes || []).reduce((length, child) => length + getSplittableTextLength(child), 0);
+}
+
+function cloneNodeTextSlice(node, start, end, cursor = { offset: 0 }) {
+  if (!node || start >= end) return null;
+
+  if (node.nodeType === Node.TEXT_NODE) {
+    const text = node.nodeValue || '';
+    const nodeStart = cursor.offset;
+    const nodeEnd = nodeStart + text.length;
+    cursor.offset = nodeEnd;
+
+    const sliceStart = Math.max(start, nodeStart);
+    const sliceEnd = Math.min(end, nodeEnd);
+    if (sliceStart >= sliceEnd) return null;
+
+    return document.createTextNode(text.slice(sliceStart - nodeStart, sliceEnd - nodeStart));
+  }
+
+  if (node.nodeName === 'BR') {
+    const nodeStart = cursor.offset;
+    cursor.offset += 1;
+    return start <= nodeStart && end > nodeStart ? node.cloneNode(false) : null;
+  }
+
+  if (node.nodeType !== Node.ELEMENT_NODE) return null;
+
+  const clone = node.cloneNode(false);
+  Array.from(node.childNodes || []).forEach((child) => {
+    const childClone = cloneNodeTextSlice(child, start, end, cursor);
+    if (childClone) clone.appendChild(childClone);
+  });
+
+  return clone.childNodes.length ? clone : null;
+}
+
+function cloneNodePrefix(node, length) {
+  return cloneNodeTextSlice(node, 0, length, { offset: 0 });
+}
+
+function cloneNodeSuffix(node, length) {
+  const totalLength = getSplittableTextLength(node);
+  return cloneNodeTextSlice(node, length, totalLength, { offset: 0 });
+}
+
+function stripNotesSelectionMarkers(html) {
+  if (!html) return '';
+
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  template.content
+    .querySelectorAll(`[${NOTES_SELECTION_MARKER_ATTRIBUTE}]`)
+    .forEach((marker) => marker.remove());
+
+  return template.innerHTML;
+}
+
 export default function App() {
   const previewRef = useRef(null);
   const canvasRef = useRef(null);
   const stageRef = useRef(null);
-  const notesEditorRef = useRef(null);
+  const leftNotesEditorRef = useRef(null);
+  const rightNotesEditorRef = useRef(null);
   const notesSelectionRef = useRef(null);
+  const notesBalanceFrameRef = useRef(null);
+  const notesSyncingRef = useRef(false);
   const studioNotesRef = useRef(readStoredStudioNotes());
   const cameraStreamRef = useRef(null);
   const audioStreamRef = useRef(null);
@@ -1162,11 +1357,15 @@ export default function App() {
   const recordingFormatRef = useRef(pickRecorderFormat());
   const libraryItemsRef = useRef([]);
   const audioContextRef = useRef(null);
+  const recordingAudioPipelineRef = useRef(null);
   const analyserRef = useRef(null);
   const meterFrameRef = useRef(null);
+  const meterRunRef = useRef(0);
+  const monitorAudioDeviceIdRef = useRef('');
+  const selectedAudioIdRef = useRef(readStoredAudioSelection().deviceId);
+  const recordingAudioGainRef = useRef(readStoredRecordingAudioGain());
   const activeCameraIdRef = useRef('');
   const cameraScanRunRef = useRef(0);
-  const previewStackResizeRef = useRef(null);
   const focalModeRef = useRef(DEFAULT_FOCAL_MODE_KEY);
   const focalDigitalScaleRef = useRef(getFocalMode(DEFAULT_FOCAL_MODE_KEY).digitalScale);
 
@@ -1174,7 +1373,7 @@ export default function App() {
   const [cameraProfiles, setCameraProfiles] = useState([]);
   const [audioInputs, setAudioInputs] = useState([]);
   const [selectedCameraId, setSelectedCameraId] = useState('');
-  const [selectedAudioId, setSelectedAudioId] = useState('');
+  const [selectedAudioId, setSelectedAudioId] = useState(() => readStoredAudioSelection().deviceId);
   const [focalMode, setFocalMode] = useState(DEFAULT_FOCAL_MODE_KEY);
   const [activeCameraSettings, setActiveCameraSettings] = useState(null);
   const [status, setStatus] = useState('Sources non initialisées');
@@ -1194,10 +1393,8 @@ export default function App() {
   const [currentView, setCurrentView] = useState('studio');
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [whiteBalancePickerActive, setWhiteBalancePickerActive] = useState(false);
-  const [previewStackWidth, setPreviewStackWidth] = useState(readStoredPreviewStackWidth);
-  const [previewStackSide, setPreviewStackSide] = useState('right');
-  const [isResizingPreviewStack, setIsResizingPreviewStack] = useState(false);
   const [noteFontSize, setNoteFontSize] = useState(28);
+  const [recordingAudioGain, setRecordingAudioGain] = useState(readStoredRecordingAudioGain);
   const [mirrorEnabled, setMirrorEnabled] = useState(() => localStorage.getItem('retok-mirror-enabled') !== 'false');
   const [whiteBalanceKelvin, setWhiteBalanceKelvin] = useState(() =>
     clampNumber(localStorage.getItem('retok-white-balance-kelvin') || DEFAULT_WHITE_BALANCE_KELVIN, 2800, 8000),
@@ -1299,6 +1496,7 @@ export default function App() {
       stopAudio();
       stopMeter();
       clearInterval(timerRef.current);
+      if (notesBalanceFrameRef.current) cancelAnimationFrame(notesBalanceFrameRef.current);
       libraryItemsRef.current.forEach((item) => URL.revokeObjectURL(item.url));
     };
   }, []);
@@ -1316,6 +1514,19 @@ export default function App() {
     if (audioInputs.length) startMeter(selectedAudioId);
     return () => stopMeter();
   }, [audioInputs.length, selectedAudioId]);
+
+  useEffect(() => {
+    selectedAudioIdRef.current = selectedAudioId;
+    const selectedDevice = audioInputs.find((device) => device.deviceId === selectedAudioId);
+    if (selectedDevice) saveAudioSelection(selectedDevice);
+  }, [audioInputs, selectedAudioId]);
+
+  useEffect(() => {
+    recordingAudioGainRef.current = recordingAudioGain;
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(RECORDING_AUDIO_GAIN_STORAGE_KEY, String(recordingAudioGain));
+    }
+  }, [recordingAudioGain]);
 
   useEffect(() => {
     return () => {
@@ -1361,12 +1572,8 @@ export default function App() {
   }, [whiteBalancePickerActive]);
 
   useEffect(() => {
-    localStorage.setItem(PREVIEW_STACK_WIDTH_STORAGE_KEY, String(previewStackWidth));
-  }, [previewStackWidth]);
-
-  useEffect(() => {
     const handleResize = () => {
-      setPreviewStackWidth((currentWidth) => clampPreviewStackWidth(currentWidth));
+      scheduleNotesBalance(notesSelectionRef.current);
     };
 
     window.addEventListener('resize', handleResize);
@@ -1375,7 +1582,7 @@ export default function App() {
 
   useEffect(() => {
     const frameId = requestAnimationFrame(() => {
-      setPreviewStackWidth((currentWidth) => clampPreviewStackWidth(currentWidth));
+      balanceNotesFlow(notesSelectionRef.current);
     });
 
     return () => cancelAnimationFrame(frameId);
@@ -1438,10 +1645,19 @@ export default function App() {
         nextCameras.some((device) => device.deviceId === current) ? current : nextCameras[0]?.deviceId || '',
       );
     }
-    setSelectedAudioId((current) =>
-      nextAudioInputs.some((device) => device.deviceId === current) ? current : nextAudioInputs[0]?.deviceId || '',
-    );
+    setSelectedAudioId((current) => {
+      const nextAudioId = resolveAudioDeviceId(nextAudioInputs, current);
+      selectedAudioIdRef.current = nextAudioId;
+      return nextAudioId;
+    });
     if (updateStatus) setStatus(nextCameras.length && nextAudioInputs.length ? 'Prêt à enregistrer' : 'Source manquante');
+  }
+
+  function handleAudioSourceChange(deviceId) {
+    selectedAudioIdRef.current = deviceId;
+    const selectedDevice = audioInputs.find((device) => device.deviceId === deviceId);
+    if (selectedDevice) saveAudioSelection(selectedDevice);
+    setSelectedAudioId(deviceId);
   }
 
   async function refreshDevices() {
@@ -1710,88 +1926,263 @@ export default function App() {
     setWhiteBalancePickerActive(false);
   }
 
-  function clampPreviewStackWidth(width) {
-    const stageRect = stageRef.current?.getBoundingClientRect();
-    const requestedWidth = clampNumber(width, MIN_PREVIEW_STACK_WIDTH, MAX_PREVIEW_STACK_WIDTH);
-
-    if (!stageRect?.width || !stageRect?.height) return requestedWidth;
-
-    const sideInset = 14;
-    const topInset = 72;
-    const bottomInset = 14;
-    const controlsHeight = 54;
-    const maxByWidth = stageRect.width - sideInset * 2;
-    const maxByHeight = Math.max(
-      MIN_PREVIEW_STACK_WIDTH,
-      ((stageRect.height - topInset - bottomInset - controlsHeight) * 9) / 16,
-    );
-
-    return clampNumber(requestedWidth, MIN_PREVIEW_STACK_WIDTH, Math.min(MAX_PREVIEW_STACK_WIDTH, maxByWidth, maxByHeight));
+  function getNotesEditors() {
+    return [leftNotesEditorRef.current, rightNotesEditorRef.current].filter(Boolean);
   }
 
-  function startPreviewStackResize(event) {
-    if (event.button !== 0 || whiteBalancePickerActive) return;
-
-    event.stopPropagation();
-    previewStackResizeRef.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      startWidth: previewStackWidth,
-    };
-    event.currentTarget.setPointerCapture?.(event.pointerId);
-    setIsResizingPreviewStack(true);
+  function getNotesEditorForNode(node) {
+    return getNotesEditors().find((editor) => editor === node || editor.contains(node)) || null;
   }
 
-  function resizePreviewStack(event) {
-    const resizeState = previewStackResizeRef.current;
-    if (!resizeState || resizeState.pointerId !== event.pointerId) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-    const deltaX = event.clientX - resizeState.startX;
-    const deltaY = event.clientY - resizeState.startY;
-    const nextWidth = clampPreviewStackWidth(resizeState.startWidth + deltaX + deltaY * 0.45);
-
-    setPreviewStackWidth(nextWidth);
+  function removeNotesSelectionMarkers() {
+    getNotesEditors().forEach((editor) => {
+      editor.querySelectorAll(`[${NOTES_SELECTION_MARKER_ATTRIBUTE}]`).forEach((marker) => marker.remove());
+    });
   }
 
-  function stopPreviewStackResize(event) {
-    const resizeState = previewStackResizeRef.current;
-    if (!resizeState || resizeState.pointerId !== event.pointerId) return;
-
-    event.stopPropagation();
-    event.currentTarget.releasePointerCapture?.(event.pointerId);
-    previewStackResizeRef.current = null;
-    setIsResizingPreviewStack(false);
-  }
-
-  function saveNotesSelection() {
-    const editor = notesEditorRef.current;
+  function placeNotesSelectionMarker() {
     const selection = window.getSelection?.();
-    if (!editor || !selection?.rangeCount) return;
+    if (!selection?.rangeCount) return false;
 
     const range = selection.getRangeAt(0);
-    if (editor.contains(range.commonAncestorContainer)) {
-      notesSelectionRef.current = range.cloneRange();
+    if (!range.collapsed || !getNotesEditorForNode(range.commonAncestorContainer)) return false;
+
+    removeNotesSelectionMarkers();
+
+    const marker = document.createElement('span');
+    marker.setAttribute(NOTES_SELECTION_MARKER_ATTRIBUTE, 'caret');
+    marker.setAttribute('aria-hidden', 'true');
+
+    range.insertNode(marker);
+    range.setStartAfter(marker);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    return true;
+  }
+
+  function restoreNotesSelectionFromMarker() {
+    const marker = getNotesEditors()
+      .map((editor) => editor.querySelector(`[${NOTES_SELECTION_MARKER_ATTRIBUTE}]`))
+      .find(Boolean);
+    const selection = window.getSelection?.();
+
+    if (!marker || !selection) return false;
+
+    const editor = getNotesEditorForNode(marker);
+    const range = document.createRange();
+    range.setStartBefore(marker);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    marker.remove();
+    editor?.focus();
+    saveNotesSelection();
+
+    return true;
+  }
+
+  function getEditorTextOffset(editor, node, offset) {
+    if (!editor || !node) return 0;
+
+    try {
+      const range = document.createRange();
+      range.selectNodeContents(editor);
+      range.setEnd(node, offset);
+      return range.toString().length;
+    } catch (rangeError) {
+      return 0;
     }
   }
 
-  function restoreNotesSelection() {
-    const editor = notesEditorRef.current;
+  function getSelectionTextOffsets() {
     const selection = window.getSelection?.();
-    const range = notesSelectionRef.current;
-    if (!editor || !selection || !range) return;
+    if (!selection?.rangeCount) return null;
 
+    const range = selection.getRangeAt(0);
+    const editors = getNotesEditors();
+    const startEditor = getNotesEditorForNode(range.startContainer);
+    const endEditor = getNotesEditorForNode(range.endContainer);
+
+    if (!startEditor || !endEditor) return null;
+
+    const getGlobalOffset = (editor, node, offset) => {
+      const editorIndex = editors.indexOf(editor);
+      const previousLength = editors
+        .slice(0, editorIndex)
+        .reduce((length, currentEditor) => length + (currentEditor.textContent?.length || 0), 0);
+
+      return previousLength + getEditorTextOffset(editor, node, offset);
+    };
+
+    return {
+      start: getGlobalOffset(startEditor, range.startContainer, range.startOffset),
+      end: getGlobalOffset(endEditor, range.endContainer, range.endOffset),
+    };
+  }
+
+  function findTextPositionInEditor(editor, offset) {
+    const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+    let remaining = offset;
+    let lastTextNode = null;
+    let currentNode = walker.nextNode();
+
+    while (currentNode) {
+      const textLength = currentNode.nodeValue?.length || 0;
+      if (remaining <= textLength) {
+        return { node: currentNode, offset: remaining };
+      }
+
+      remaining -= textLength;
+      lastTextNode = currentNode;
+      currentNode = walker.nextNode();
+    }
+
+    if (lastTextNode) {
+      return { node: lastTextNode, offset: lastTextNode.nodeValue?.length || 0 };
+    }
+
+    return { node: editor, offset: editor.childNodes.length };
+  }
+
+  function findTextPosition(globalOffset) {
+    const editors = getNotesEditors();
+    let remaining = Math.max(0, globalOffset);
+
+    for (const editor of editors) {
+      const editorLength = editor.textContent?.length || 0;
+      if (remaining <= editorLength) return findTextPositionInEditor(editor, remaining);
+      remaining -= editorLength;
+    }
+
+    const lastEditor = editors[editors.length - 1];
+    return lastEditor ? findTextPositionInEditor(lastEditor, lastEditor.textContent?.length || 0) : null;
+  }
+
+  function saveNotesSelection() {
+    const offsets = getSelectionTextOffsets();
+    if (offsets) notesSelectionRef.current = offsets;
+  }
+
+  function restoreNotesSelection() {
+    const offsets = notesSelectionRef.current;
+    const selection = window.getSelection?.();
+    if (!selection || !offsets) return false;
+
+    const start = findTextPosition(offsets.start);
+    const end = findTextPosition(offsets.end);
+    if (!start || !end) return false;
+
+    const range = document.createRange();
+    range.setStart(start.node, start.offset);
+    range.setEnd(end.node, end.offset);
     selection.removeAllRanges();
     selection.addRange(range);
-    editor.focus();
+
+    const editor = getNotesEditorForNode(start.node);
+    editor?.focus();
+    return true;
+  }
+
+  function isLeftNotesOverflowing() {
+    const leftEditor = leftNotesEditorRef.current;
+    return Boolean(leftEditor?.clientHeight && leftEditor.scrollHeight > leftEditor.clientHeight + 1);
+  }
+
+  function fitFirstRightNodeIntoLeft() {
+    const leftEditor = leftNotesEditorRef.current;
+    const rightEditor = rightNotesEditorRef.current;
+    const candidate = rightEditor?.firstChild;
+    if (!leftEditor || !rightEditor || !candidate) return;
+
+    const candidateTextLength = getSplittableTextLength(candidate);
+    if (!candidateTextLength) return;
+
+    let low = 0;
+    let high = candidateTextLength;
+    let bestLength = 0;
+
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      const prefix = cloneNodePrefix(candidate, mid);
+      if (prefix) leftEditor.appendChild(prefix);
+
+      const fits = !isLeftNotesOverflowing();
+      if (prefix) leftEditor.removeChild(prefix);
+
+      if (fits) {
+        bestLength = mid;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+
+    if (!bestLength) return;
+
+    const prefix = cloneNodePrefix(candidate, bestLength);
+    const suffix = cloneNodeSuffix(candidate, bestLength);
+    if (prefix) leftEditor.appendChild(prefix);
+
+    if (suffix) {
+      rightEditor.replaceChild(suffix, candidate);
+    } else {
+      rightEditor.removeChild(candidate);
+    }
+  }
+
+  function balanceNotesFlow(selectionOffsets = notesSelectionRef.current, notesHtml = studioNotesRef.current) {
+    const leftEditor = leftNotesEditorRef.current;
+    const rightEditor = rightNotesEditorRef.current;
+    if (!leftEditor || !rightEditor || currentView !== 'studio') return;
+
+    notesSyncingRef.current = true;
+    try {
+      leftEditor.innerHTML = notesHtml;
+      rightEditor.innerHTML = '';
+
+      while (isLeftNotesOverflowing() && leftEditor.lastChild) {
+        rightEditor.insertBefore(leftEditor.lastChild, rightEditor.firstChild);
+      }
+
+      fitFirstRightNodeIntoLeft();
+
+      const markerRestored = restoreNotesSelectionFromMarker();
+      removeNotesSelectionMarkers();
+
+      if (!markerRestored && selectionOffsets) {
+        notesSelectionRef.current = selectionOffsets;
+        restoreNotesSelection();
+      }
+    } finally {
+      notesSyncingRef.current = false;
+    }
+  }
+
+  function scheduleNotesBalance(selectionOffsets = notesSelectionRef.current, notesHtml = studioNotesRef.current) {
+    if (notesBalanceFrameRef.current) cancelAnimationFrame(notesBalanceFrameRef.current);
+
+    notesBalanceFrameRef.current = requestAnimationFrame(() => {
+      notesBalanceFrameRef.current = null;
+      balanceNotesFlow(selectionOffsets, notesHtml);
+    });
   }
 
   function syncStudioNotes() {
-    const nextNotes = notesEditorRef.current?.innerHTML || '';
+    if (notesSyncingRef.current) return;
+
+    const markerPlaced = placeNotesSelectionMarker();
+    const selectionOffsets = markerPlaced ? null : getSelectionTextOffsets() || notesSelectionRef.current;
+    if (selectionOffsets) notesSelectionRef.current = selectionOffsets;
+
+    const leftNotes = leftNotesEditorRef.current?.innerHTML || '';
+    const rightNotes = rightNotesEditorRef.current?.innerHTML || '';
+    const notesWithMarker = `${leftNotes}${rightNotes}`;
+    const nextNotes = stripNotesSelectionMarkers(notesWithMarker);
     studioNotesRef.current = nextNotes;
     localStorage.setItem(STUDIO_NOTES_STORAGE_KEY, nextNotes);
+    scheduleNotesBalance(selectionOffsets, notesWithMarker);
   }
 
   function applyNoteBlock(block) {
@@ -1805,7 +2196,7 @@ export default function App() {
     restoreNotesSelection();
     setNoteFontSize(size);
     document.execCommand('fontSize', false, '7');
-    if (notesEditorRef.current) replaceFontTagsWithSpans(notesEditorRef.current, size);
+    getNotesEditors().forEach((editor) => replaceFontTagsWithSpans(editor, size));
     syncStudioNotes();
     saveNotesSelection();
   }
@@ -1820,25 +2211,36 @@ export default function App() {
   }
 
   function stopAudio() {
-    audioStreamRef.current?.getTracks().forEach((track) => track.stop());
+    recordingAudioPipelineRef.current?.stop?.();
+    recordingAudioPipelineRef.current = null;
+    stopStreamTracks(audioStreamRef.current);
     audioStreamRef.current = null;
   }
 
-  function stopMeter() {
+  function releaseMeterResources() {
     if (meterFrameRef.current) cancelAnimationFrame(meterFrameRef.current);
     meterFrameRef.current = null;
     analyserRef.current?.disconnect?.();
     analyserRef.current = null;
     audioContextRef.current?.close?.();
     audioContextRef.current = null;
-    monitorStreamRef.current?.getTracks().forEach((track) => track.stop());
+    stopStreamTracks(monitorStreamRef.current);
     monitorStreamRef.current = null;
+    monitorAudioDeviceIdRef.current = '';
+  }
+
+  function stopMeter() {
+    meterRunRef.current += 1;
+    releaseMeterResources();
     setAudioLevel(0);
     setAudioState('idle');
   }
 
   async function startMeter(deviceId) {
-    stopMeter();
+    const runId = meterRunRef.current + 1;
+
+    meterRunRef.current = runId;
+    releaseMeterResources();
     setAudioState('checking');
 
     try {
@@ -1852,7 +2254,14 @@ export default function App() {
       analyser.fftSize = 1024;
       audioContext.createMediaStreamSource(stream).connect(analyser);
 
+      if (meterRunRef.current !== runId) {
+        stopStreamTracks(stream);
+        audioContext.close?.();
+        return;
+      }
+
       monitorStreamRef.current = stream;
+      monitorAudioDeviceIdRef.current = deviceId || '';
       audioContextRef.current = audioContext;
       analyserRef.current = analyser;
 
@@ -1861,6 +2270,7 @@ export default function App() {
       let signalSeen = false;
 
       const tick = () => {
+        if (meterRunRef.current !== runId) return;
         analyser.getFloatTimeDomainData(samples);
         const sum = samples.reduce((total, sample) => total + sample * sample, 0);
         const rms = Math.sqrt(sum / samples.length);
@@ -1874,22 +2284,29 @@ export default function App() {
 
       tick();
     } catch (meterError) {
+      if (meterRunRef.current !== runId) return;
       setAudioState('error');
       setAudioLevel(0);
     }
   }
 
-  async function getAudioTracks() {
-    const monitorTracks = monitorStreamRef.current?.getAudioTracks().filter((track) => track.readyState === 'live') || [];
-    if (monitorTracks.length) {
-      const clones = monitorTracks.map((track) => track.clone());
-      audioStreamRef.current = new MediaStream(clones);
-      return clones;
+  async function getAudioTracks(deviceId) {
+    stopAudio();
+
+    if (!deviceId) throw new Error('Sélectionne une source audio avant d’enregistrer.');
+
+    const inputStream = await navigator.mediaDevices.getUserMedia(makeAudioConstraints(deviceId));
+    const pipeline = await createCenteredMonoAudioPipeline(inputStream, recordingAudioGainRef.current);
+    const audioTracks = getLiveAudioTracks(pipeline.stream);
+
+    if (!audioTracks.length) {
+      pipeline.stop();
+      throw new Error('Aucune piste audio disponible.');
     }
 
-    const stream = await navigator.mediaDevices.getUserMedia(makeAudioConstraints(selectedAudioId));
-    audioStreamRef.current = stream;
-    return stream.getAudioTracks();
+    recordingAudioPipelineRef.current = pipeline;
+    audioStreamRef.current = pipeline.stream;
+    return audioTracks;
   }
 
   async function startRecording() {
@@ -1906,7 +2323,9 @@ export default function App() {
       const videoTracks = canvasStream?.getVideoTracks() || cameraStreamRef.current?.getVideoTracks() || [];
       if (!videoTracks.length) throw new Error('Aucune piste vidéo disponible.');
 
-      const audioTracks = await getAudioTracks();
+      const recordingAudioId = selectedAudioIdRef.current || selectedAudioId;
+      const recordingAudioLabel = deviceName(audioInputs, recordingAudioId, 'Source audio');
+      const audioTracks = await getAudioTracks(recordingAudioId);
       const mixedStream = new MediaStream([...videoTracks, ...audioTracks]);
       const recordingFormat = pickRecorderFormat();
       const recorder = new MediaRecorder(
@@ -1952,7 +2371,7 @@ export default function App() {
       recordingStartedAtRef.current = Date.now();
       setIsRecording(true);
       setRecordingSeconds(0);
-      setStatus('Enregistrement en cours');
+      setStatus(`Enregistrement en cours · ${recordingAudioLabel}`);
       timerRef.current = setInterval(() => setRecordingSeconds((seconds) => seconds + 1), 1000);
     } catch (recordingError) {
       stopAudio();
@@ -2023,17 +2442,6 @@ export default function App() {
           </div>
         </div>
         <div className="topbar-actions">
-          {currentView === 'studio' && (
-            <button
-              className="nav-button"
-              type="button"
-              aria-label={`Placer le retour vidéo à ${previewStackSide === 'right' ? 'gauche' : 'droite'}`}
-              onClick={() => setPreviewStackSide((side) => (side === 'right' ? 'left' : 'right'))}
-            >
-              {previewStackSide === 'right' ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
-              Retour {previewStackSide === 'right' ? 'gauche' : 'droite'}
-            </button>
-          )}
           <button
             className="nav-button"
             type="button"
@@ -2140,7 +2548,7 @@ export default function App() {
             <select
               id="audio-select"
               value={selectedAudioId}
-              onChange={(event) => setSelectedAudioId(event.target.value)}
+              onChange={(event) => handleAudioSourceChange(event.target.value)}
               disabled={!sourcesOpen || isRecording}
             >
               {audioInputs.map((device, index) => (
@@ -2149,6 +2557,27 @@ export default function App() {
                 </option>
               ))}
             </select>
+          </label>
+
+          <label className="audio-gain-control" htmlFor="audio-gain">
+            <span>
+              Gain enregistrement
+              <strong>{recordingAudioGain.toFixed(1)}x · {formatGainDb(recordingAudioGain)}</strong>
+            </span>
+            <input
+              id="audio-gain"
+              type="range"
+              min={MIN_RECORDING_AUDIO_GAIN}
+              max={MAX_RECORDING_AUDIO_GAIN}
+              step="0.1"
+              value={recordingAudioGain}
+              disabled={!sourcesOpen || isRecording}
+              onChange={(event) =>
+                setRecordingAudioGain(
+                  clampNumber(event.target.value, MIN_RECORDING_AUDIO_GAIN, MAX_RECORDING_AUDIO_GAIN),
+                )
+              }
+            />
           </label>
 
           <div className={`audio-meter ${audioState}`}>
@@ -2329,9 +2758,8 @@ export default function App() {
 
         <section
           ref={stageRef}
-          className={`stage preview-${previewStackSide}`}
+          className="stage"
           aria-label="Aperçu et enregistrement"
-          style={{ '--preview-stack-width': `${previewStackWidth}px` }}
         >
           <div className="notes-zone">
             <div className="notes-toolbar" aria-label="Typographie des notes">
@@ -2360,35 +2788,41 @@ export default function App() {
                 </select>
               </label>
             </div>
-            <div
-              ref={notesEditorRef}
-              className="notes-editor"
-              contentEditable
-              suppressContentEditableWarning
-              aria-label="Notes de tournage"
-              data-placeholder="Notes"
-              spellCheck="true"
-              onInput={syncStudioNotes}
-              onKeyUp={saveNotesSelection}
-              onMouseUp={saveNotesSelection}
-              onBlur={saveNotesSelection}
-              onPaste={handleNotesPaste}
-              dangerouslySetInnerHTML={{ __html: studioNotesRef.current }}
-            />
+            <div className="notes-columns">
+              <div
+                ref={leftNotesEditorRef}
+                className="notes-editor notes-editor-left"
+                contentEditable
+                suppressContentEditableWarning
+                aria-label="Notes de tournage gauche"
+                data-placeholder="Notes"
+                spellCheck="true"
+                onInput={syncStudioNotes}
+                onKeyUp={saveNotesSelection}
+                onMouseUp={saveNotesSelection}
+                onFocus={saveNotesSelection}
+                onBlur={saveNotesSelection}
+                onPaste={handleNotesPaste}
+              />
+              <div className="notes-center-spacer" aria-hidden="true" />
+              <div
+                ref={rightNotesEditorRef}
+                className="notes-editor notes-editor-right"
+                contentEditable
+                suppressContentEditableWarning
+                aria-label="Notes de tournage droite"
+                spellCheck="true"
+                onInput={syncStudioNotes}
+                onKeyUp={saveNotesSelection}
+                onMouseUp={saveNotesSelection}
+                onFocus={saveNotesSelection}
+                onBlur={saveNotesSelection}
+                onPaste={handleNotesPaste}
+              />
+            </div>
           </div>
 
-          <div
-            className={[
-              'preview-stack',
-              `side-${previewStackSide}`,
-              isResizingPreviewStack ? 'resizing' : '',
-            ]
-              .filter(Boolean)
-              .join(' ')}
-            style={{
-              width: `${previewStackWidth}px`,
-            }}
-          >
+          <div className="preview-stack">
             <div className={whiteBalancePickerActive ? 'preview-wrap picking-white' : 'preview-wrap'}>
               <video ref={previewRef} className="raw-preview" autoPlay playsInline muted />
               <canvas
@@ -2403,15 +2837,6 @@ export default function App() {
                 <span className={isRecording ? 'rec-pill active' : 'rec-pill'}>{isRecording ? 'REC' : 'READY'}</span>
                 <span>{formatTime(recordingSeconds)}</span>
               </div>
-              <button
-                className="preview-resize-handle"
-                type="button"
-                aria-label="Redimensionner le retour image"
-                onPointerDown={startPreviewStackResize}
-                onPointerMove={resizePreviewStack}
-                onPointerUp={stopPreviewStackResize}
-                onPointerCancel={stopPreviewStackResize}
-              />
             </div>
 
             <div className="transport">
